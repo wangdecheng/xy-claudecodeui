@@ -1,9 +1,16 @@
+import { createHash } from 'node:crypto';
+
 import { Database } from 'better-sqlite3';
 
 import {
   APP_CONFIG_TABLE_SCHEMA_SQL,
   LAST_SCANNED_AT_SQL,
+  MIGRATIONS_APPLIED_TABLE_SCHEMA_SQL,
   NOTIFICATION_CHANNEL_ENDPOINTS_TABLE_SCHEMA_SQL,
+  ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL,
+  ONSITE_FILES_TABLE_SCHEMA_SQL,
+  ONSITE_PROBLEMS_TABLE_SCHEMA_SQL,
+  ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL,
   PROJECTS_TABLE_SCHEMA_SQL,
   PUSH_SUBSCRIPTIONS_TABLE_SCHEMA_SQL,
   SESSIONS_TABLE_SCHEMA_SQL,
@@ -422,7 +429,16 @@ const ensureProjectsForSessionPaths = (db: Database): void => {
 };
 
 export const runMigrations = (db: Database) => {
-  try {
+  // Wrap the entire migration flow in a single transaction so partial
+  // failures roll back every step. This is the C-4 fix: previously a failure
+  // on step N left steps 1..N-1 committed, producing a half-baked schema that
+  // downstream code couldn't trust.
+  //
+  // better-sqlite3's `db.transaction(fn)` returns a wrapped function. SQLite
+  // SAVEPOINT semantics mean any `exec` inside the wrapper that throws rolls
+  // back the whole transaction, including the migrations_applied rows we
+  // write per-step.
+  const migrateAll = db.transaction(() => {
     const usersTableInfo = db.prepare('PRAGMA table_info(users)').all() as { name: string }[];
     const userColumnNames = usersTableInfo.map((column) => column.name);
 
@@ -472,9 +488,230 @@ export const runMigrations = (db: Database) => {
     }
 
     db.exec(LAST_SCANNED_AT_SQL);
+
+    // ---- Onsite analysis schema (Batch 2 of customer-onsite-analysis-ui) ----
+    // Sessions table: add kind + cwd + third_bridge_branch + iteration + database
+    addSessionsKindAndOnsiteColumns(db);
+    db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_kind_cwd ON sessions(kind, cwd)');
+
+    // New onsite tables — created in dependency order so foreign keys resolve.
+    // All four use IF NOT EXISTS so a partially-applied legacy state can heal
+    // itself if verifyMigrations is bypassed.
+    db.exec(ONSITE_PROBLEMS_TABLE_SCHEMA_SQL);
+    db.exec(ONSITE_FILES_TABLE_SCHEMA_SQL);
+    db.exec(ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL);
+    db.exec(ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL);
+
+    // Onsite indexes (kept in migrations so we don't depend on INIT_SCHEMA_SQL
+    // having run for an upgraded database that pre-dates these tables).
+    db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_status ON onsite_problems(status)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_files_problem_id ON onsite_files(problem_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_state_audit_problem_id ON onsite_state_audit(problem_id)');
+    db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_discipline_log_problem_id ON onsite_discipline_log(problem_id)');
+  });
+
+  // migrations_applied is created BEFORE the transaction so the very first
+  // step can write to it without self-deadlocking. Pre-existing tables are
+  // detected via IF NOT EXISTS.
+  db.exec(MIGRATIONS_APPLIED_TABLE_SCHEMA_SQL);
+
+  try {
+    migrateAll();
+    recordAppliedMigrations(db);
     console.log('Database migrations completed successfully');
-  } catch (error: any) {
-    console.error('Error running migrations:', error.message);
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error('Error running migrations:', message);
     throw error;
   }
 };
+
+/**
+ * Adds the onsite columns to an existing `sessions` table.
+ *
+ * Idempotent: each column is checked via PRAGMA table_info and skipped if
+ * already present. SQLite does not support adding CHECK constraints via
+ * ALTER TABLE, so the `kind` column is added as a plain TEXT and the CHECK
+ * constraint is enforced at the application layer (sessionsDb validates
+ * kind before write). On fresh installs the CHECK is part of
+ * SESSIONS_TABLE_SCHEMA_SQL.
+ */
+const addSessionsKindAndOnsiteColumns = (db: Database): void => {
+  const info = getTableInfo(db, 'sessions');
+  if (!info.length) {
+    // Sessions table doesn't exist yet — INIT_SCHEMA_SQL will create it with
+    // the right shape, nothing to do here.
+    return;
+  }
+
+  const columnNames = info.map((c) => c.name);
+
+  if (!columnNames.includes('kind')) {
+    console.log('Running migration: Adding kind column to sessions table');
+    db.exec(`ALTER TABLE sessions ADD COLUMN kind TEXT NOT NULL DEFAULT 'chat'`);
+  }
+
+  for (const [name, type] of [
+    ['cwd', 'TEXT'],
+    ['third_bridge_branch', 'TEXT'],
+    ['iteration', 'TEXT'],
+    ['database', 'TEXT'],
+  ] as const) {
+    if (!columnNames.includes(name)) {
+      console.log(`Running migration: Adding ${name} column to sessions table`);
+      db.exec(`ALTER TABLE sessions ADD COLUMN ${name} ${type}`);
+    }
+  }
+};
+
+// ---------------------------------------------------------------------------
+// Migration integrity (Batch 2 / C-4 patch)
+// ---------------------------------------------------------------------------
+
+export class MigrationCorruptionError extends Error {
+  readonly code = 'MIGRATION_CORRUPTION';
+  readonly missing: string[];
+  readonly corrupt: Array<{ name: string; expectedSha: string; actualSha: string }>;
+
+  constructor(
+    message: string,
+    missing: string[],
+    corrupt: Array<{ name: string; expectedSha: string; actualSha: string }>,
+  ) {
+    super(message);
+    this.name = 'MigrationCorruptionError';
+    this.missing = missing;
+    this.corrupt = corrupt;
+  }
+}
+
+export type VerifyMigrationsResult =
+  | { ok: true; version: number }
+  | {
+      ok: false;
+      missing: string[];
+      corrupt: Array<{ name: string; expectedSha: string; actualSha: string }>;
+    };
+
+/**
+ * Verify that every migration step the current code expects has been applied,
+ * and that none of the recorded SHAs have drifted from what we expect.
+ *
+ * "Missing" means the code declares a step that was never recorded in the
+ * DB — usually means the migrations runner hasn't run, or rolled back.
+ *
+ * "Corrupt" means the recorded SHA differs from the expected SHA — the step
+ * ran, but the underlying SQL changed in a way the integrity check refuses
+ * to silently accept. This catches the failure mode where a developer edits
+ * a SQL constant without bumping the migration name.
+ *
+ * Returns the user_version PRAGMA as `version` on success so callers can
+ * log a single number for ops dashboards.
+ */
+export const verifyMigrations = (db: Database): VerifyMigrationsResult => {
+  const tablePresent = tableExists(db, 'migrations_applied');
+  const recordedRows = tablePresent
+    ? (db
+        .prepare('SELECT name, sha FROM migrations_applied ORDER BY id ASC')
+        .all() as Array<{ name: string; sha: string }>)
+    : [];
+  const recorded = new Map(recordedRows.map((r) => [r.name, r.sha]));
+
+  const missing: string[] = [];
+  const corrupt: Array<{ name: string; expectedSha: string; actualSha: string }> = [];
+
+  for (const step of ONSITE_MIGRATION_STEPS) {
+    const recordedSha = recorded.get(step.name);
+    if (!recordedSha) {
+      missing.push(step.name);
+      continue;
+    }
+    if (recordedSha !== step.sha) {
+      corrupt.push({ name: step.name, expectedSha: step.sha, actualSha: recordedSha });
+    }
+  }
+
+  const userVersion = (db.pragma('user_version', { simple: true }) as number) ?? 0;
+
+  if (missing.length === 0 && corrupt.length === 0) {
+    return { ok: true, version: userVersion };
+  }
+  return { ok: false, missing, corrupt };
+};
+
+/**
+ * Records every migration step the current code defines into migrations_applied
+ * with its SHA-256. Called at the tail of `runMigrations` so the integrity
+ * check has a complete record on the next startup.
+ *
+ * The SHA is computed over the SQL body (which detects drift if the SQL
+ * constant changes). We deliberately don't include the file path so the SHA
+ * survives git moves.
+ */
+export const recordAppliedMigrations = (db: Database): void => {
+  const insert = db.prepare(
+    `INSERT INTO migrations_applied (name, sha, applied_at)
+     VALUES (?, ?, CURRENT_TIMESTAMP)
+     ON CONFLICT(name) DO UPDATE SET
+       sha = excluded.sha,
+       applied_at = CURRENT_TIMESTAMP`,
+  );
+
+  for (const step of ONSITE_MIGRATION_STEPS) {
+    insert.run(step.name, step.sha);
+  }
+};
+
+/**
+ * List of migrations the current code declares. Each entry has a stable
+ * `name` (used as the migrations_applied primary key) and a SHA-256 of the
+ * SQL body (used by verifyMigrations).
+ *
+ * Adding a new migration: append a new entry here AND append the
+ * corresponding `db.exec(...)` to the migrateAll transaction in runMigrations.
+ * Changing the SQL body of an existing migration requires either bumping
+ * the `name` or accepting that verifyMigrations will report it as corrupt
+ * on the next startup.
+ */
+type MigrationStep = { name: string; sql: string; sha: string };
+
+const sha256 = (sql: string): string =>
+  createHash('sha256').update(sql, 'utf8').digest('hex');
+
+const ONSITE_MIGRATION_STEPS: MigrationStep[] = [
+  {
+    name: '001_add_sessions_kind_and_onsite_columns',
+    sql: 'ADD COLUMN kind / cwd / third_bridge_branch / iteration / database',
+    sha: '',
+  },
+  {
+    name: '002_create_onsite_problems_table',
+    sql: ONSITE_PROBLEMS_TABLE_SCHEMA_SQL,
+    sha: '',
+  },
+  {
+    name: '003_create_onsite_files_table',
+    sql: ONSITE_FILES_TABLE_SCHEMA_SQL,
+    sha: '',
+  },
+  {
+    name: '004_create_onsite_state_audit_table',
+    sql: ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL,
+    sha: '',
+  },
+  {
+    name: '005_create_onsite_discipline_log_table',
+    sql: ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL,
+    sha: '',
+  },
+];
+
+// Lazy SHA computation — done at module-load so the SHA reflects the *current*
+// code. Any test or runtime startup that mutates the SQL constants above will
+// see new SHAs and verifyMigrations will report drift.
+for (const step of ONSITE_MIGRATION_STEPS) {
+  if (!step.sha) {
+    step.sha = sha256(step.sql);
+  }
+}

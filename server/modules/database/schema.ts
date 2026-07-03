@@ -112,10 +112,95 @@ CREATE TABLE IF NOT EXISTS sessions (
     isArchived BOOLEAN DEFAULT 0,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    -- kind: distinguishes chat sessions from customer-onsite-analysis sessions.
+    -- CHECK constraint enforces the two valid values at the storage layer so
+    -- a stray write of e.g. 'admin' is rejected by SQLite before the
+    -- application can read it back.
+    kind TEXT NOT NULL DEFAULT 'chat' CHECK(kind IN ('chat','onsite')),
+    -- Onsite-only columns. NULL for chat sessions.
+    cwd TEXT,
+    third_bridge_branch TEXT,
+    iteration TEXT,
+    database TEXT,
     PRIMARY KEY (session_id),
     FOREIGN KEY (project_path) REFERENCES projects(project_path)
     ON DELETE SET NULL
     ON UPDATE CASCADE
+);
+`;
+
+export const ONSITE_PROBLEMS_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS onsite_problems (
+    id TEXT PRIMARY KEY,
+    customer TEXT NOT NULL,
+    third_bridge_branch TEXT,
+    iteration TEXT NOT NULL,
+    database TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending_info',
+    cwd TEXT NOT NULL,
+    problem_json_path TEXT,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    mtime TEXT
+);
+`;
+
+export const ONSITE_FILES_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS onsite_files (
+    id TEXT PRIMARY KEY,
+    problem_id TEXT NOT NULL,
+    original_name TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    size INTEGER NOT NULL,
+    kind TEXT NOT NULL DEFAULT 'log',
+    unpacked_dir TEXT,
+    uploaded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (problem_id) REFERENCES onsite_problems(id) ON DELETE CASCADE
+);
+`;
+
+export const ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS onsite_state_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem_id TEXT NOT NULL,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    actor_id TEXT,
+    at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (problem_id) REFERENCES onsite_problems(id) ON DELETE CASCADE
+);
+`;
+
+export const ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS onsite_discipline_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    problem_id TEXT NOT NULL,
+    message_id TEXT,
+    kind TEXT NOT NULL,
+    word TEXT,
+    position INTEGER,
+    cmd TEXT,
+    stdout_preview TEXT,
+    at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (problem_id) REFERENCES onsite_problems(id) ON DELETE CASCADE
+);
+`;
+
+/**
+ * migrations_applied — every step run by `runMigrations` records a row here
+ * with its name + SHA-256. Used by `verifyMigrations` to detect drift between
+ * the code that ran last and the code that's loaded now.
+ *
+ * Created *outside* the migration transaction so the very first migration
+ * step can write to it without deadlocking itself.
+ */
+export const MIGRATIONS_APPLIED_TABLE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS migrations_applied (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    sha TEXT NOT NULL,
+    applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 `;
 
@@ -177,4 +262,21 @@ CREATE INDEX IF NOT EXISTS idx_session_ids_lookup ON sessions(session_id);
 ${LAST_SCANNED_AT_SQL}
 
 ${APP_CONFIG_TABLE_SCHEMA_SQL}
+
+-- migrations_applied is created here (outside the migration transaction) so
+-- the very first step can write to it without deadlocking itself.
+${MIGRATIONS_APPLIED_TABLE_SCHEMA_SQL}
+
+-- onsite analysis (Batch 2 of customer-onsite-analysis-ui)
+${ONSITE_PROBLEMS_TABLE_SCHEMA_SQL}
+${ONSITE_FILES_TABLE_SCHEMA_SQL}
+${ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL}
+${ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL}
+
+CREATE INDEX IF NOT EXISTS idx_sessions_kind_cwd ON sessions(kind, cwd);
+CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd);
+CREATE INDEX IF NOT EXISTS idx_onsite_problems_status ON onsite_problems(status);
+CREATE INDEX IF NOT EXISTS idx_onsite_files_problem_id ON onsite_files(problem_id);
+CREATE INDEX IF NOT EXISTS idx_onsite_state_audit_problem_id ON onsite_state_audit(problem_id);
+CREATE INDEX IF NOT EXISTS idx_onsite_discipline_log_problem_id ON onsite_discipline_log(problem_id);
 `;
