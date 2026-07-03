@@ -1,0 +1,130 @@
+# Chat 路径回归 + diff 检测的 CI 流水线。
+#
+# 触发条件:
+#   - 任何 PR(包含 fork PR 不直接跑敏感 shell,但本工作流只读 + 自包含脚本,允许)
+#   - workflow_dispatch(手动触发)
+#
+# 三步:
+#   1. diff-chat-impact.sh  比较 BASE..HEAD,任一 chat 关键文件被改 → exit 1
+#      (脚本退码 0/1 不阻止 merge,但报告写进 PR;非 0 异常则失败)
+#   2. regression-chat.sh  跑真后端测试,写 chat-regression-baseline.txt
+#      (exit 0 ⇒ 通过;exit 1 ⇒ 阻塞 merge — chat 路径回归)
+#   3. 上传 chat-regression-baseline.txt 作为 PR artifact
+#
+# 关于 SHA 来源:
+#   - pull_request 事件可直接拿 github.event.pull_request.base.sha 和 .head.sha
+#   - workflow_dispatch 没有 PR context,所以允许 "BASE_SHA/HEAD_SHA 未提供时跳过 diff 步骤"
+
+name: Regression — chat path
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chat-regression:
+    name: chat path regression + diff
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # 需要 git diff BASE..HEAD
+
+      - name: Set up Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci
+        shell: bash
+
+      - name: Compute BASE_SHA / HEAD_SHA
+        id: shas
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            BASE_SHA="${{ github.event.pull_request.base.sha }}"
+            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
+          else
+            # workflow_dispatch:用 merge-base 与 HEAD 做 BASE
+            BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD)"
+            HEAD_SHA="$(git rev-parse HEAD)"
+          fi
+          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
+          echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
+          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
+          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
+
+      # --- 步骤 1:chat 关键文件 diff 检测 ---
+      - name: Diff chat path files
+        id: diff
+        shell: bash
+        run: |
+          set +e
+          ./scripts/diff-chat-impact.sh
+          DIFF_EXIT=$?
+          set -e
+          # exit 0/1 都视为"已完成检测"(1 是预期:有改动需在 PR 描述说明)
+          if [[ $DIFF_EXIT -eq 0 ]]; then
+            echo "diff_clean=true" >> "$GITHUB_OUTPUT"
+          elif [[ $DIFF_EXIT -eq 1 ]]; then
+            echo "diff_clean=false" >> "$GITHUB_OUTPUT"
+            # 提示性失败(reviewer 看 PR diff 即可),不阻塞
+            echo "::warning::chat path critical files were modified — PR must include baseline diff in description"
+          else
+            # 异常(2 = 输入错误等)
+            echo "::error::diff-chat-impact.sh exit=$DIFF_EXIT"
+            exit $DIFF_EXIT
+          fi
+
+      # --- 步骤 2:跑真测试 + 写 baseline ---
+      - name: Run chat regression suite
+        id: regression
+        shell: bash
+        run: |
+          set +e
+          ./scripts/regression-chat.sh 2>&1 | tee chat-regression-run.log
+          REG_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "regression_exit=$REG_EXIT" >> "$GITHUB_OUTPUT"
+          if [[ $REG_EXIT -ne 0 ]]; then
+            echo "::error::chat path regression FAILED — see log and chat-regression-baseline.txt. Paste baseline diff in PR description."
+            exit $REG_EXIT
+          fi
+
+      # --- 步骤 3:上传 baseline 作为 PR artifact ---
+      - name: Upload baseline artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chat-regression-baseline
+          path: |
+            chat-regression-baseline.txt
+            chat-regression-run.log
+          if-no-files-found: warn
+          retention-days: 30
+
+      # 显式总结两个 step 的结果到 job summary
+      - name: Summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## chat path regression"
+            echo ""
+            echo "- diff-clean: ${{ steps.diff.outputs.diff_clean }}"
+            echo "- regression: ${{ steps.regression.outputs.regression_exit }}"
+            echo ""
+            echo "### baseline"
+            echo '```'
+            cat chat-regression-baseline.txt 2>/dev/null || echo "(no baseline written)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
