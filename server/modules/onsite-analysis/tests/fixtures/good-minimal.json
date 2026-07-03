@@ -1,0 +1,9 @@
+{
+  "_comment": "Good fixture for re-read tests (minimal valid).",
+  "customers": [
+    { "label": "不涉及三方对接", "branch": null }
+  ],
+  "iterations": [
+    "master_5.2_3.2"
+  ]
+}

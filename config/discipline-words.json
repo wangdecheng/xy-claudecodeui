@@ -1,0 +1,20 @@
+{
+  "_comment": "软化词中英文对照表 — 用于根因结论纪律审计（onsite.discipline.softening_warn）。UI 标注 + 后端 422 阻断；新增词条向后兼容。",
+  "words": [
+    "可能",
+    "也许",
+    "大概",
+    "或许",
+    "似乎",
+    "看起来像",
+    "应该是",
+    "估计是",
+    "maybe",
+    "perhaps",
+    "probably",
+    "might",
+    "could be",
+    "looks like",
+    "likely"
+  ]
+}

@@ -1,0 +1,68 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://cloudcli.local/schemas/customer-analysis.schema.json",
+  "title": "CustomerOnsiteAnalysisConfig",
+  "description": "客户现场问题分析系统 — 新建向导下拉驱动配置（customer + iteration）。首项必须是「不涉及三方对接」且 branch=null。branch 字段允许三种形态：null、master_/release_ 前缀的 Git 分支名、或者短标识符（如 zgj_565939、sinopec、sse 等）。配置是单一真实来源 — UI 不允许手动输入。",
+  "type": "object",
+  "required": ["customers", "iterations"],
+  "additionalProperties": true,
+  "properties": {
+    "customers": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["label", "branch"],
+        "additionalProperties": true,
+        "properties": {
+          "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "客户名显示文本"
+          },
+          "branch": {
+            "description": "关联的 Git 分支或标识符：null / master_xxx / release_xxx / 短标识符。",
+            "oneOf": [
+              { "type": "null" },
+              {
+                "type": "string",
+                "minLength": 1,
+                "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
+                "description": "分支名/标识符（仅允许字母数字下划线点中划线，必须以字母数字下划线开头）"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "iterations": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "string",
+        "pattern": "^(master|release)_.+",
+        "description": "迭代分支名，形如 release_5.2_3.2_20260327 或 master_5.2_3.2"
+      }
+    }
+  },
+  "allOf": [
+    {
+      "description": "customers[0] 必须是「不涉及三方对接」且 branch=null",
+      "properties": {
+        "customers": {
+          "items": [
+            {
+              "type": "object",
+              "required": ["label", "branch"],
+              "additionalProperties": true,
+              "properties": {
+                "label": { "const": "不涉及三方对接" },
+                "branch": { "type": "null" }
+              }
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
