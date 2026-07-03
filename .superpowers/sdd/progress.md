@@ -7,6 +7,33 @@
 |------|------|---------|------|
 | Task 0.1 | complete(review approved) | 14af19b | `scripts/regression-chat.sh` + 5 个测试;real run: 78 pass / 1 fail / 8862 ms |
 | Task 0.2 | complete(review approved) | 14af19b + 9318b69 | `scripts/diff-chat-impact.sh` + 5 个测试 + `.github/workflows/regression.yml` |
+| Task 1.1 | complete(review approved) | (含 1.2 commit) | `config/discipline-words.json` + `config/json-schemas/customer-analysis.schema.json`(`config/customer-analysis.json` 已存在) |
+| Task 1.2 | complete(review approved) | 6ecbb22 | `server/modules/onsite-analysis/config.service.ts` + 7 个测试 |
+| Task 1.3 | complete(review approved) | a3ab84d | mtime watch + hot-reload + 5 个测试 |
+| Task 1.4 | complete(review approved) | b6ef14d | `onsite.routes.ts` + `GET /api/onsite/config` + 4 个测试 + `bootstrapConfig` 注入 `server/index.js` |
+
+## Review Verdict — Batch 1
+
+- **Verdict**: ✅ Approved
+- **Critical**: 0
+- **Important**: 4(全部为卫生级,非阻塞,记为 cleanup follow-up)
+- **Minor**: 6(可后续 follow-up)
+
+### 后续 follow-up(Important 4 条)
+
+1. `customer-analysis.schema.json` `additionalProperties: true` 顶层过宽(应 `false` + 白名单 `_comment`)
+2. `ajv` 走 transitive dep,应显式加到 `dependencies`
+3. `_setConfigForTests` 公开导出可被生产代码误用
+4. `watchConfig` 单 watcher 约束未在 API 层强制
+
+### 后续 follow-up(Minor 6 条)
+
+- `_comment` 字段是 schema 收紧后的潜在 landmine
+- 503 fallback 在 `onsite.routes.ts` 是 over-engineering
+- `onConfigChange` 初始 bootstrap 不触发订阅(应加 JSDoc)
+- 测试名小写 + 部分缺 assertion message
+- 内部 `await import('node:fs/promises')` 冗余
+- 4 个文件缺 trailing newline
 
 ## Review Verdict — Batch 0
 
