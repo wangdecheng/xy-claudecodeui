@@ -1,0 +1,261 @@
+/**
+ * ProblemService — writes problem.json on disk under ONSITE_ROOT, and keeps
+ * a parallel row in `onsite_problems` for fast listing/audit.
+ *
+ * Design (D-3): disk is the source of truth. DB write failures are logged
+ * as warnings; disk failures throw.
+ *
+ * Disk layout (per existing CLAUDE.md in customer-onsite-analysis/):
+ *   ~/work/customer-onsite-analysis/YYYYMMDD-客户/problem.json
+ *   ~/work/customer-onsite-analysis/YYYYMMDD-客户/unpacked-N/<logs>
+ *
+ * Duplicate same-day creation appends `_2`, `_3`, ... to the directory and
+ * the `id` field on the row.
+ */
+
+import { existsSync } from 'node:fs';
+import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+
+import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+
+export class CwdEscapeError extends Error {
+  readonly code = 'CWD_ESCAPE';
+  readonly cwd: string;
+  readonly root: string;
+
+  constructor(cwd: string, root: string) {
+    super(`cwd "${cwd}" is outside the onsite root "${root}"`);
+    this.name = 'CwdEscapeError';
+    this.cwd = cwd;
+    this.root = root;
+  }
+}
+
+export type CreateProblemInput = {
+  customer: string;
+  third_bridge_branch: string | null;
+  iteration: string;
+  database: string;
+  cwd: string;
+};
+
+export type ProblemRecord = {
+  id: string;
+  customer: string;
+  third_bridge_branch: string | null;
+  iteration: string;
+  database: string;
+  status: string;
+  cwd: string;
+  problem_json_path: string | null;
+};
+
+export type ProblemListItem = ProblemRecord & {
+  problem_json_path: string | null;
+};
+
+/**
+ * Resolve ONSITE_ROOT lazily — tests override via process.env.ONSITE_ROOT
+ * before importing this module, but ESM module-load order means we have to
+ * read at call-time, not at module-load time.
+ */
+export function resolveOnsiteRoot(): string {
+  return process.env.ONSITE_ROOT ?? path.join(os.homedir(), 'work/customer-onsite-analysis');
+}
+
+/**
+ * Replaces filesystem-unsafe characters with `_` so the resulting directory
+ * name is portable. Whitespace is preserved (e.g. 山西公安 stays 山西公安).
+ */
+export function sanitizeCustomerLabel(s: string): string {
+  return s.replace(/[\\/:*?"<>|]/g, '_');
+}
+
+/**
+ * Asserts `cwd` resolves to a path under `root` after symlink + `..`
+ * normalization. Throws CwdEscapeError otherwise.
+ */
+export function assertCwdUnderRoot(cwd: string, root: string = resolveOnsiteRoot()): void {
+  const absoluteCwd = path.isAbsolute(cwd) ? path.resolve(cwd) : path.resolve(root, cwd);
+  const absoluteRoot = path.resolve(root);
+  const relative = path.relative(absoluteRoot, absoluteCwd);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new CwdEscapeError(cwd, absoluteRoot);
+  }
+}
+
+const YYYYMMDD_PREFIX_REGEX = /^(\d{8})-(.+)$/;
+const DATE_SUFFIX_REGEX = /_(\d+)$/;
+
+function extractCustomer(dirName: string): string {
+  const match = YYYYMMDD_PREFIX_REGEX.exec(dirName);
+  if (!match) return dirName;
+  // strip trailing _N suffix from same-day duplicates
+  const customer = match[2]!;
+  const suffix = DATE_SUFFIX_REGEX.exec(customer);
+  return suffix ? customer.slice(0, suffix.index) : customer;
+}
+
+function deriveIdFromDirName(dirName: string): string {
+  return dirName;
+}
+
+function deriveStatusFromProblemJson(json: unknown): string {
+  if (json && typeof json === 'object' && json !== null && 'status' in json) {
+    const status = (json as { status?: unknown }).status;
+    if (typeof status === 'string' && status.length > 0) return status;
+  }
+  return 'pending_info';
+}
+
+/**
+ * `create` writes `problem.json` to disk first, then inserts the row.
+ * If the disk write fails, the call throws and no DB row is written.
+ * If the DB insert fails after a successful disk write, the call still
+ * resolves — disk is the source of truth per D-3, and the next `list`
+ * will reconcile.
+ */
+export const problemService = {
+  async create(input: CreateProblemInput): Promise<ProblemRecord> {
+    const root = resolveOnsiteRoot();
+    assertCwdUnderRoot(input.cwd, root);
+
+    const today = new Date();
+    const yyyymmdd = formatYyyymmdd(today);
+
+    const sanitizedCustomer = sanitizeCustomerLabel(input.customer);
+    const baseDirName = `${yyyymmdd}-${sanitizedCustomer}`;
+    const dirName = await nextAvailableDirName(root, baseDirName);
+    const dirPath = path.join(root, dirName);
+    await mkdir(dirPath, { recursive: true });
+
+    const problemJsonPath = path.join(dirPath, 'problem.json');
+    const record: ProblemRecord = {
+      id: deriveIdFromDirName(dirName),
+      customer: sanitizedCustomer,
+      third_bridge_branch: input.third_bridge_branch,
+      iteration: input.iteration,
+      database: input.database,
+      status: 'pending_info',
+      cwd: dirPath,
+      problem_json_path: problemJsonPath,
+    };
+
+    const jsonPayload = {
+      id: record.id,
+      customer: record.customer,
+      third_bridge_branch: record.third_bridge_branch,
+      iteration: record.iteration,
+      database: record.database,
+      status: record.status,
+      cwd: record.cwd,
+      problem_json_path: record.problem_json_path,
+      created_at: today.toISOString(),
+    };
+    await writeFile(problemJsonPath, JSON.stringify(jsonPayload, null, 2), 'utf8');
+
+    try {
+      onsiteProblemsDb.insert({
+        id: record.id,
+        customer: record.customer,
+        third_bridge_branch: record.third_bridge_branch,
+        iteration: record.iteration,
+        database: record.database,
+        status: record.status,
+        cwd: record.cwd,
+        problem_json_path: record.problem_json_path,
+      });
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(`[problem.service] DB insert failed for ${record.id}; disk is authoritative: ${message}`);
+    }
+
+    return record;
+  },
+
+  async list(): Promise<ProblemListItem[]> {
+    const root = resolveOnsiteRoot();
+    if (!existsSync(root)) return [];
+
+    const entries = await readdir(root, { withFileTypes: true });
+    const items: ProblemListItem[] = [];
+
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      if (!YYYYMMDD_PREFIX_REGEX.test(entry.name)) continue;
+
+      const dirPath = path.join(root, entry.name);
+      const jsonPath = path.join(dirPath, 'problem.json');
+      let status = 'pending_info';
+      let customer = extractCustomer(entry.name);
+      let iteration: string | null = null;
+      let database: string | null = null;
+      let thirdBridgeBranch: string | null = null;
+
+      try {
+        const raw = await readFile(jsonPath, 'utf8');
+        const json = JSON.parse(raw) as Record<string, unknown>;
+        status = deriveStatusFromProblemJson(json);
+        if (typeof json.customer === 'string') customer = json.customer;
+        if (typeof json.iteration === 'string') iteration = json.iteration;
+        if (typeof json.database === 'string') database = json.database;
+        if (typeof json.third_bridge_branch === 'string' || json.third_bridge_branch === null) {
+          thirdBridgeBranch = (json.third_bridge_branch as string | null) ?? null;
+        }
+      } catch {
+        // No problem.json or unparseable — fall back to defaults
+      }
+
+      items.push({
+        id: deriveIdFromDirName(entry.name),
+        customer,
+        third_bridge_branch: thirdBridgeBranch,
+        iteration: iteration ?? 'master_5.2_3.2',
+        database: database ?? '',
+        status,
+        cwd: dirPath,
+        problem_json_path: existsSync(jsonPath) ? jsonPath : null,
+      });
+    }
+
+    return items;
+  },
+
+  async getById(id: string): Promise<ProblemRecord | null> {
+    const row = onsiteProblemsDb.findById(id);
+    if (!row) return null;
+    return {
+      id: row.id,
+      customer: row.customer,
+      third_bridge_branch: row.third_bridge_branch,
+      iteration: row.iteration,
+      database: row.database,
+      status: row.status,
+      cwd: row.cwd,
+      problem_json_path: row.problem_json_path,
+    };
+  },
+};
+
+/**
+ * Find the next available directory name with `_N` suffix on collision.
+ * `20260703-山西公安` -> `20260703-山西公安_2` -> `..._3`, etc.
+ */
+async function nextAvailableDirName(root: string, baseDirName: string): Promise<string> {
+  const first = path.join(root, baseDirName);
+  if (!existsSync(first)) return baseDirName;
+  for (let i = 2; i < 1000; i += 1) {
+    const candidate = `${baseDirName}_${i}`;
+    if (!existsSync(path.join(root, candidate))) return candidate;
+  }
+  throw new Error(`Too many duplicate problem dirs for ${baseDirName} under ${root}`);
+}
+
+function formatYyyymmdd(date: Date): string {
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, '0');
+  const d = String(date.getDate()).padStart(2, '0');
+  return `${y}${m}${d}`;
+}
