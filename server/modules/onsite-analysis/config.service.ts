@@ -14,6 +14,7 @@ import path from 'node:path';
 
 import type Ajv from 'ajv';
 import type { ErrorObject, ValidateFunction } from 'ajv';
+import chokidar, { type FSWatcher } from 'chokidar';
 
 import { findAppRoot, getModuleDir } from '@/utils/runtime-paths.js';
 
@@ -166,4 +167,117 @@ export function resetConfig(): void {
  */
 export function _setConfigForTests(payload: ConfigPayload | null): void {
   cachedPayload = payload;
+}
+
+// ---------------------------------------------------------------------------
+// Hot reload (Task 1.3)
+// ---------------------------------------------------------------------------
+
+type ConfigChangeListener = (cfg: ConfigPayload) => void;
+type ConfigInvalidListener = (error: InvalidConfigError, filePath: string) => void;
+
+const subscribers = new Set<{
+  onChange: ConfigChangeListener;
+  onInvalid?: ConfigInvalidListener;
+}>();
+
+let activeWatcher: FSWatcher | null = null;
+let watchedPath: string | null = null;
+
+function emitChange(payload: ConfigPayload): void {
+  for (const sub of subscribers) {
+    try {
+      sub.onChange(payload);
+    } catch (err) {
+      console.warn('[config.service] subscriber threw on change:', err);
+    }
+  }
+}
+
+function emitInvalid(error: InvalidConfigError, filePath: string): void {
+  for (const sub of subscribers) {
+    if (!sub.onInvalid) continue;
+    try {
+      sub.onInvalid(error, filePath);
+    } catch (err) {
+      console.warn('[config.service] subscriber threw on invalid:', err);
+    }
+  }
+}
+
+async function reloadFromDisk(filePath: string): Promise<void> {
+  try {
+    const next = await loadConfig(filePath);
+    emitChange(next);
+  } catch (error: unknown) {
+    if (error instanceof InvalidConfigError) {
+      console.warn(`[config.service] hot-reload rejected invalid config at ${filePath}:`, error.message);
+      emitInvalid(error, filePath);
+      return;
+    }
+    console.warn(`[config.service] hot-reload failed for ${filePath}:`, error);
+  }
+}
+
+/**
+ * Start watching `filePath` for changes. Re-reads + re-validates on each
+ * change. If the new file fails validation, the previous (last-known-good)
+ * singleton is preserved. Returns an unsubscribe function that stops the
+ * watcher.
+ *
+ * Calling watchConfig() twice replaces the previous watcher.
+ */
+export function watchConfig(filePath: string): () => void {
+  if (activeWatcher) {
+    void activeWatcher.close().catch(() => undefined);
+    activeWatcher = null;
+  }
+  const resolved = resolveConfigPath(filePath);
+  watchedPath = resolved;
+
+  const watcher = chokidar.watch(resolved, {
+    ignoreInitial: true,
+    awaitWriteFinish: {
+      stabilityThreshold: 80,
+      pollInterval: 25,
+    },
+    persistent: true,
+    usePolling: false,
+  });
+  activeWatcher = watcher;
+
+  const onChange = () => {
+    void reloadFromDisk(resolved);
+  };
+  watcher.on('change', onChange);
+  watcher.on('add', onChange);
+  watcher.on('error', (err) => {
+    console.warn(`[config.service] watcher error on ${resolved}:`, err);
+  });
+
+  return () => {
+    void watcher.close().catch(() => undefined);
+    if (activeWatcher === watcher) {
+      activeWatcher = null;
+      watchedPath = null;
+    }
+  };
+}
+
+/**
+ * Subscribe to config changes. Returns an unsubscribe function.
+ *
+ * - `onChange(payload)` fires whenever a new valid config is loaded.
+ * - `onInvalid(error, filePath)` (optional) fires when the file was rewritten
+ *   but failed validation. The singleton stays at the previous good value.
+ */
+export function onConfigChange(
+  onChange: ConfigChangeListener,
+  onInvalid?: ConfigInvalidListener,
+): () => void {
+  const entry = { onChange, onInvalid };
+  subscribers.add(entry);
+  return () => {
+    subscribers.delete(entry);
+  };
 }
