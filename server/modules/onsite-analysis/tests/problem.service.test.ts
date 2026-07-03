@@ -80,24 +80,57 @@ test('create 写入 YYYYMMDD-客户 目录 + problem.json', async () => {
   });
 });
 
-test('create 同日同客户重复 -> 自动加 _2 后缀', async () => {
+test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirName dedup 路径)', async () => {
   await withIsolatedEnv(async () => {
     const cwd = process.env.ONSITE_ROOT + '/20260703-山西公安';
-    await problemService.create({
+
+    // 第一次创建:目录名应当是 base(没有 _2 后缀),即
+    // `nextAvailableDirName` 返回的就是 baseDirName。
+    const first = await problemService.create({
       customer: '山西公安',
       third_bridge_branch: 'master_5.2_3.2',
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd,
     });
+    assert.equal(
+      first.id,
+      '20260703-山西公安',
+      '首次创建应原样使用 base 目录名,不走 dedup 分支',
+    );
+    assert.equal(first.cwd, path.join(process.env.ONSITE_ROOT!, '20260703-山西公安'));
+
+    // 第二次创建:故意传同样的 cwd(而不是预先加 _2 后缀),让
+    // `nextAvailableDirName` 真正命中 dedup 循环,以确保该分支被
+    // 覆盖。如果实现只用 cwd 的字面字符串就把 _2 拼回去,这条路径
+    // 永远不会跑到。
     const second = await problemService.create({
       customer: '山西公安',
       third_bridge_branch: 'master_5.2_3.2',
       iteration: 'master_5.2_3.2',
       database: 'db01',
-      cwd: cwd + '_2',
+      cwd, // 故意不变,跟 first 完全一致
     });
-    assert.ok(second.id.endsWith('_2') || second.id.includes('_2'));
+    assert.equal(
+      second.id,
+      '20260703-山西公安_2',
+      '第二次创建应触发 dedup,_2 后缀由 nextAvailableDirName 分配',
+    );
+    assert.equal(
+      second.cwd,
+      path.join(process.env.ONSITE_ROOT!, '20260703-山西公安_2'),
+      'dedup 后 record.cwd 也应指向新的 _2 目录,而不是 caller 传过来的 cwd',
+    );
+
+    // 两个目录都应当真实存在于磁盘上 —— 用 list 再把它们读出来确认
+    // 两条记录都在 DB 行里。
+    const listed = await problemService.list();
+    const ids = listed.map((item) => item.id).sort();
+    assert.deepEqual(
+      ids,
+      ['20260703-山西公安', '20260703-山西公安_2'],
+      'list 应同时返回首次和 dedup 后的两条记录',
+    );
   });
 });
 
