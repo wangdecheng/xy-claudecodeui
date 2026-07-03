@@ -68,7 +68,7 @@ import onsiteRoutes from './modules/onsite-analysis/onsite.routes.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
-import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
+import { initializeDatabase, projectsDb, sessionsDb, handleMigrationCorruption } from './modules/database/index.js';
 import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
@@ -1728,8 +1728,18 @@ async function removeLocalServerMarker() {
 // Initialize database and start server
 async function startServer() {
     try {
-        // Initialize authentication database
-        await initializeDatabase();
+        // Initialize authentication database. A migration-integrity
+        // failure (drift in a recorded SHA, or a missing migration step)
+        // is raised as `MigrationCorruptionError` from `initializeDatabase`.
+        // Hand it to `handleMigrationCorruption` which exits the process
+        // with code 1 — a corrupted DB must never be allowed to serve
+        // requests. Any other init failure is left to bubble up to the
+        // outer catch below.
+        try {
+            await initializeDatabase();
+        } catch (initErr) {
+            handleMigrationCorruption(initErr);
+        }
 
         // Configure Web Push (VAPID keys)
         configureWebPush();
