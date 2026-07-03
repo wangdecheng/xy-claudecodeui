@@ -93,7 +93,7 @@ function formatAjvErrors(errors: ErrorObject[]): string {
   }
   return errors
     .map((err) => {
-      const dataPath = (err as ErrorObject & { dataPath?: string }).dataPath ?? err.instancePath ?? '/';
+      const dataPath = (err as ErrorObject & { dataPath?: string }).dataPath ?? '/';
       const detail = err.params && Object.keys(err.params).length > 0
         ? ` (${JSON.stringify(err.params)})`
         : '';
@@ -280,4 +280,30 @@ export function onConfigChange(
   return () => {
     subscribers.delete(entry);
   };
+}
+
+/**
+ * Bootstrap helper — load the config once and start watching. Safe to call
+ * multiple times; subsequent calls are no-ops if the same path is already
+ * being watched.
+ */
+export async function bootstrapConfig(filePath: string): Promise<ConfigPayload> {
+  const resolved = resolveConfigPath(filePath);
+  const payload = await loadConfig(resolved);
+  if (watchedPath !== resolved) {
+    watchConfig(resolved);
+  }
+  return payload;
+}
+
+/**
+ * Test-only helper. Stops any active watcher and clears subscribers.
+ */
+export function _stopWatchingForTests(): void {
+  if (activeWatcher) {
+    void activeWatcher.close().catch(() => undefined);
+    activeWatcher = null;
+    watchedPath = null;
+  }
+  subscribers.clear();
 }

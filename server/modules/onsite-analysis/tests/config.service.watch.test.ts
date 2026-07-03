@@ -15,6 +15,7 @@ import path from 'node:path';
 import test from 'node:test';
 
 import {
+  _stopWatchingForTests,
   getConfig,
   loadConfig,
   onConfigChange,
@@ -45,6 +46,7 @@ async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void
 }
 
 test.beforeEach(() => {
+  _stopWatchingForTests();
   resetConfig();
 });
 

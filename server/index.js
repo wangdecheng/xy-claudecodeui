@@ -64,10 +64,12 @@ import pluginsRoutes from './routes/plugins.js';
 import providerRoutes from './modules/providers/provider.routes.js';
 import voiceRoutes from './voice-proxy.js';
 import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
+import onsiteRoutes from './modules/onsite-analysis/onsite.routes.js';
 import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
 import { browserUseService } from './modules/browser-use/browser-use.service.js';
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
+import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -225,6 +227,9 @@ app.use('/api/providers', authenticateToken, providerRoutes);
 
 // Agent API Routes (uses API key authentication)
 app.use('/api/agent', agentRoutes);
+
+// Onsite analysis routes (customer onsite issue wizard + config)
+app.use('/api/onsite', authenticateToken, onsiteRoutes);
 
 app.use('/api/voice', authenticateToken, voiceRoutes);
 
@@ -1761,6 +1766,13 @@ async function startServer() {
 
             // Start watching the projects folder for changes
             await initializeSessionsWatcher();
+
+            // Bootstrap onsite analysis config + start mtime hot-reload watcher
+            try {
+                await bootstrapConfig(path.join(APP_ROOT, 'config/customer-analysis.json'));
+            } catch (error) {
+                console.warn(`${c.warn('[WARN]')} Failed to bootstrap onsite config:`, error?.message || error);
+            }
 
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
