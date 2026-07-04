@@ -24,6 +24,12 @@
 | Task 2.fix.review.4 | complete(review approved) | 19890dc | **Important 修复(I-5)**: config 路由测试收紧到 `=== 503`(原 5xx 范围) |
 | Task 2.fix.review.5 | complete(review approved) | 26409a0 | **Important 修复(I-6)**: `updateStatus` → `updateStatusOnly`,移除死参数 `_reason` / `_actorId` |
 | Task 2.fix.review.6 | complete(review approved) | 6aa6aae | **Important 修复(I-9)**: `sessionsDb` 加 app-layer `assertSessionKind` 守卫 + `createOnsiteSession` + `findOnsiteSessionByCwd`(同时覆盖 review F-2 forward-looking 风险) |
+| Task 2.fix.review.7 | complete(review approved) | 65f25b5 | **Pre-existing 修复**: `problem.service.test.ts` 硬编码 `20260703` 跨天 fail,改 `todayYyyymmdd()` 动态;同时重写 `chat-regression-baseline.txt` 从 `78/1` 到 `157/1`(本批次 +20 测试 + 1 pre-existing) |
+| Task 2.fix.review.8 | complete(review approved) | 13dbded | **Review followup**: `sessions-kind.test.ts` 之前只查 `session_id`+`project_path`,改直查 DB 验证 `kind/cwd/third_bridge_branch/iteration/database` 列 |
+| Task 3.1 | complete(review approved) | eeddca4 | `server/modules/onsite-analysis/state-machine.service.ts` + 28 个测试(11 合法边 + 11 非法边 + 4 apply error + atomicity + happy) |
+| Task 3.2 | complete(review approved) | 53651da | `onsite.routes.ts` 5 端点(GET list / POST / GET :id / PATCH / GET :id/files)+ 14 个测试 |
+| Task 3.3 | complete(review approved) | a06c08e | `server/modules/onsite-analysis/onsite-broadcast.ts` + 10 个测试(subscribe/unsubscribe/broadcast/per-subscriber try-catch/watcher 集成) |
+| Task 3.fix.1 | complete(review approved) | 5b27acf | **Review followup**: `state-machine.test.ts` atomicity 测试改 monkey-patch `onsiteStateAuditDb.append` 真注入事务中途失败,证明 ROLLBACK 同时撤销 status + audit |
 
 ## Review Verdict — Batch 2
 
@@ -59,6 +65,50 @@
 **I-4 (`config.service.bootstrapConfig` race with watch)**: **Deferred with rationale** — 窗口小,影响仅在 bootstrap 返回与 chokidar 首次 attach 之间,典型单服务器不会遇到。Batch 5 (WS 路径黑名单,需要更精细的 path-watch) 重新 review 时一并处理。如需提前解决:实现 "watcher before load" — 即在 chokidar 注册但 `ignoreInitial: true`,待 `ready` 后才允许 emit。
 
 **I-8 (`OnsiteWatcher.listeners.clear()` 全局清理)**: **Deferred with rationale** — 测试目前是串行,即便 Batch 5.5 把测试分散到多个 file,Node 24 默认还是 sequential。`--test-concurrency > 1` 才需要修,而该 flag 当前未启。建议 Batch 8 验收前 pre-disable 并加 telemetry 暴露 "I cleared listeners from N test contexts" 日志。
+
+## Review Verdict — Batch 3
+
+- **Verdict**: ✅ Approved
+- **Critical**: 0
+- **Important**: 3(均非阻塞,1 已修 + 2 记为 follow-up)
+- **Minor**: 5(已记入 follow-up 池)
+
+### Important 处置
+
+1. **(已修,本批次) Atomicity 测试 coverage gap**: `state-machine.test.ts` 原测试用 illegal transition 拒收路径(实际只验证 canTransition 提前拒绝),没有真正注入事务中途失败。改成 monkey-patch `onsiteStateAuditDb.append` 抛错,验证 status + audit 同时回滚。Forward-looking:Batch 4 并发 PATCH 会真命中这条路径,需要测试真实保护原子性。 — `5b27acf`
+2. `(遗留 follow-up) apply returns at from a fresh listByProblemId query` — 第二次 DB 读,有微小 over-estimate。Batch 4 / 5 若以 `at` 作 causal timestamp,需让 `onsiteStateAuditDb.append` 直接返回 `at`。
+3. `(遗留 follow-up) PATCH route 用 .then/.catch 而非 async/await` — 与其他 handler 不一致但形状正确,后续 cleanup 时统一。
+
+### 后续 follow-up(Minor 5 条)
+
+- `PATCH` 返回 `{from, to, at}` 比 spec 多(REQ-3.3 scenario 只要求 audit 落库);多给无害
+- `state-machine.service.ts:142-145` defensive `?? new Date()` 兜底理论上不会触发
+- `_resetForTests()` underscore-prefixed 良好;建议后续用 testing re-export
+- `compareStatus` 用 `?? 99` 兜底未知状态,掩盖数据 corruption,可加 assert/log
+- `onsite.routes.ts` JSDoc 提到 `/config` 是 "Batch 1"(老 docstring),不是本批次问题
+
+## 状态
+
+- **Workflow**: `full`
+- **Mode**: `SDD`
+- **Contract**: 已批准(2026-07-03)
+- **Batches Completed**: 4 / 9(Batch 0~3;Batch 4~8 + 5.5 待跑)
+- **当前 commit**: `5b27acf`(Batch 3 + atomicity fix 完结)
+- **Pre-existing failure**:
+  - `provider-models.service.test.ts`(main 上 fail,与 chat 路径无关)
+  - `config.service.watch.test.ts:53` mtime 测试 flaky(macOS 1ms mtime 解析)
+
+## Review 节点
+
+- [x] Batch 0 收尾 → 进 Batch 1
+- [x] Batch 1 收尾 → 进 Batch 2
+- [x] Batch 2 收尾 → 进 Batch 3(检查点复审修复完成)
+- [x] Batch 3 收尾 → 进 Batch 4(纪律护栏核心)
+- [ ] Batch 4 收尾 → 进 Batch 5
+- [ ] Batch 5 收尾 → 进 Batch 5.5(chat 回归门禁)
+- [ ] Batch 5.5 收尾 → 进 Batch 6
+- [ ] Batch 7 收尾 → 进 Batch 8
+- [ ] Batch 8 收尾 → 进 release-archivist
 
 ## Review Verdict — Batch 1
 
