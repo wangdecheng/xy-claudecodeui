@@ -5,21 +5,32 @@
  * (`app.use('/api/onsite', authenticateToken, onsiteRoutes)` in `server/index.js`),
  * not per-handler, so every route under this prefix is protected.
  *
- * Endpoints (Batch 3):
+ * Endpoints (Batch 3 + 4 + 5):
  *  - GET  /api/onsite/config
  *  - GET  /api/onsite/problems
  *  - POST /api/onsite/problems
  *  - GET  /api/onsite/problems/:id
  *  - PATCH /api/onsite/problems/:id
+ *  - POST /api/onsite/problems/:id/confirm-root-cause
+ *  - POST /api/onsite/problems/:id/files         (Batch 5.4 — file upload)
  *  - GET  /api/onsite/problems/:id/files
  */
 
+import { randomUUID } from 'node:crypto';
+import { tmpdir } from 'node:os';
 import express, { type Request, type Response } from 'express';
+import multer from 'multer';
 
 import { onsiteFilesDb } from '@/modules/database/repositories/onsite-files.db.js';
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 import { getConfig } from './config.service.js';
 import { disciplineSofteningMiddleware } from './discipline/discipline-softening.middleware.js';
+import {
+  PayloadTooLargeError,
+  TooManyFilesError,
+  unpackMany,
+  type UploadedFile,
+} from './log-unpack.service.js';
 import { onsiteBroadcast } from './onsite-broadcast.js';
 import {
   CwdEscapeError,
@@ -36,6 +47,26 @@ import {
 } from './state-machine.service.js';
 
 const router = express.Router();
+
+// ---------------------------------------------------------------------------
+// Multer upload (Batch 5.4) — diskStorage under os.tmpdir(), max 20 files,
+// each ≤ 200MB. Per-batch size / count limits are enforced again in
+// logUnpackService.unpackMany() so we can return structured 207/413 errors.
+// ---------------------------------------------------------------------------
+
+const uploadMiddleware = multer({
+  storage: multer.diskStorage({
+    destination: (_req, _file, cb) => cb(null, tmpdir()),
+    filename: (_req, file, cb) => {
+      const uniqueSuffix = `${Date.now()}-${Math.round(Math.random() * 1e9)}`;
+      cb(null, `onsite-upload-${uniqueSuffix}-${file.originalname}`);
+    },
+  }),
+  limits: {
+    fileSize: 200 * 1024 * 1024,
+    files: 20,
+  },
+});
 
 // ---------------------------------------------------------------------------
 // GET /config (Batch 1)
@@ -366,6 +397,115 @@ router.post('/problems/:id/confirm-root-cause', (req: Request, res: Response) =>
       res.status(500).json({ error: 'CONFIRM_ROOT_CAUSE_FAILED', message });
     });
 });
+
+// ---------------------------------------------------------------------------
+// POST /api/onsite/problems/:id/files (Batch 5.4)
+// ---------------------------------------------------------------------------
+//
+// 接收 multipart 上传(form 字段名 `files`,最多 20 个文件,单文件 ≤ 200MB)。
+// 每个 zip 解压到 <problem.cwd>/unpacked-N/,N 从 1 起;损坏 zip → 该项
+// { ok: false, error: 'corrupted_zip' },其他项继续。
+// 整批成功或部分成功 → 207 multi-status,含 per-file results。
+// 单包超大 / 总数超限 → 413。
+
+router.post('/problems/:id/files', (req, res, next) => {
+  uploadMiddleware.array('files', 20)(req, res, (multerErr: unknown) => {
+    if (multerErr) {
+      const message = multerErr instanceof Error ? multerErr.message : String(multerErr);
+      if (/LIMIT_FILE_SIZE/i.test(message)) {
+        return res.status(413).json({ error: 'PAYLOAD_TOO_LARGE', message: '单文件超过 200MB 上限' });
+      }
+      if (/LIMIT_FILE_COUNT/i.test(message)) {
+        return res.status(413).json({ error: 'TOO_MANY_FILES', message: '超过 20 文件上限' });
+      }
+      if (/LIMIT_UNEXPECTED_FILE/i.test(message)) {
+        return res.status(400).json({ error: 'BAD_FIELD_NAME', message: '字段名必须是 files' });
+      }
+      return res.status(400).json({ error: 'UPLOAD_FAILED', message });
+    }
+    return handleFileUpload(req, res, next);
+  });
+});
+
+async function handleFileUpload(req: Request, res: Response, _next: express.NextFunction): Promise<void> {
+  const id = req.params.id;
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+
+  if (files.length === 0) {
+    res.status(400).json({ error: 'NO_FILES', message: '必须至少上传一个文件(form 字段名 files)' });
+    return;
+  }
+
+  // 1) 校验 problem 存在 + 取 cwd
+  let problem: ProblemRecord | null;
+  try {
+    problem = await problemService.getById(id);
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: 'GET_PROBLEM_FAILED', message });
+    return;
+  }
+
+  if (!problem) {
+    res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
+    return;
+  }
+
+  // 2) 调 logUnpackService 解压
+  const inputs: UploadedFile[] = files.map((f) => ({
+    originalname: f.originalname,
+    path: f.path,
+    size: f.size,
+  }));
+
+  let results;
+  try {
+    results = await unpackMany(inputs, problem.cwd);
+  } catch (err: unknown) {
+    // 整批失败
+    if (err instanceof PayloadTooLargeError) {
+      res.status(413).json({ error: err.code, message: err.message });
+      return;
+    }
+    if (err instanceof TooManyFilesError) {
+      res.status(413).json({ error: err.code, message: err.message });
+      return;
+    }
+    const message = err instanceof Error ? err.message : 'unpack failed';
+    res.status(500).json({ error: 'UNPACK_FAILED', message });
+    return;
+  }
+
+  // 3) 成功的项落 onsite_files 表
+  for (const r of results) {
+    if (!r.ok) continue;
+    const unpackedBase = r.unpackedDir.split('/').pop() ?? '';
+    onsiteFilesDb.insert({
+      id: randomUUID(),
+      problem_id: problem.id,
+      original_name: r.originalName,
+      stored_path: `${problem.cwd}/${unpackedBase}`,
+      size: r.size,
+      kind: 'archive',
+      unpacked_dir: r.unpackedDir,
+    });
+  }
+
+  // 4) 207 multi-status
+  res.status(207).json({
+    results: results.map((r) => {
+      if (r.ok) {
+        return {
+          ok: true,
+          originalName: r.originalName,
+          unpackedDir: r.unpackedDir,
+          size: r.size,
+        };
+      }
+      return { ok: false, originalName: r.originalName, error: r.error };
+    }),
+  });
+}
 
 // ---------------------------------------------------------------------------
 // GET /api/onsite/problems/:id/files
