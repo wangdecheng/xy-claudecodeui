@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import Sidebar from '../sidebar/view/Sidebar';
 import MainContent from '../main-content/view/MainContent';
 import CommandPalette from '../command-palette/CommandPalette';
+import OnsiteNavButton from '../onsite-analysis/nav/OnsiteNavButton';
 import { useWebSocket } from '../../contexts/WebSocketContext';
 import { PaletteOpsProvider, usePaletteOpsRegister } from '../../contexts/PaletteOpsContext';
 import { useDeviceSettings } from '../../hooks/useDeviceSettings';
@@ -193,8 +194,11 @@ function AppContentInner() {
   return (
     <div className="fixed inset-0 flex bg-background" style={{ bottom: 'var(--keyboard-height, 0px)' }}>
       {!isMobile ? (
-        <div className="h-full flex-shrink-0 border-r border-border/50">
+        <div className="h-full flex-shrink-0 border-r border-border/50 flex flex-col">
           <Sidebar {...sidebarSharedProps} />
+          <div className="border-t border-border/40 p-2">
+            <OnsiteNavButton />
+          </div>
         </div>
       ) : (
         <div

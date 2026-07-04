@@ -6,8 +6,10 @@ import { AuthProvider, ProtectedRoute } from './components/auth';
 import { TaskMasterProvider } from './contexts/TaskMasterContext';
 import { TasksSettingsProvider } from './contexts/TasksSettingsContext';
 import { WebSocketProvider } from './contexts/WebSocketContext';
+import { OnsiteWebSocketProvider } from './contexts/OnsiteWebSocketContext';
 import { PluginsProvider } from './contexts/PluginsContext';
 import AppContent from './components/app/AppContent';
+import OnsiteLayout from './components/onsite-analysis/layout/OnsiteLayout';
 import i18n from './i18n/config.js';
 
 const DEPLOYMENT_ASSET_DIRECTORIES = new Set(['assets', 'static', 'icons', 'images']);
@@ -108,6 +110,7 @@ export default function App() {
       <ThemeProvider>
         <AuthProvider>
           <WebSocketProvider>
+            <OnsiteWebSocketProvider>
             <PluginsProvider>
               <TasksSettingsProvider>
                 <TaskMasterProvider>
@@ -116,12 +119,15 @@ export default function App() {
                     <Routes>
                       <Route path="/" element={<AppContent />} />
                       <Route path="/session/:sessionId" element={<AppContent />} />
+                      <Route path="/onsite" element={<OnsiteLayout />} />
+                      <Route path="/onsite/:problemId" element={<OnsiteLayout />} />
                     </Routes>
                   </Router>
                 </ProtectedRoute>
                 </TaskMasterProvider>
               </TasksSettingsProvider>
             </PluginsProvider>
+            </OnsiteWebSocketProvider>
           </WebSocketProvider>
         </AuthProvider>
       </ThemeProvider>
