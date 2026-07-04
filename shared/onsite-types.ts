@@ -131,9 +131,55 @@ export interface OnsiteProblemStateChangedEvent {
   };
 }
 
+// ─── Discipline envelope (Batch 8 I3) ─────────────────────────────────────
+//
+// 三个 discipline 中间件会向 outbound envelope 注入 `discipline: { ... }` 子结构。
+// 由于改动 server middleware 受 Batch 8 约束(只允许 Phase 0 I1 动 server),
+// 这里按 server 实际发送的 camelCase 字段命名(snake_case 是 proposal 计划,
+// 但 middleware 未切换)。该 envelope 是**叠加型** — softening/traceId/write-protection
+// 三个标志可同时存在。
+//
+// 字段来源:
+//   discipline-softening.middleware.ts → { softening: true, words: [{word,position}] }
+//   discipline-trace-id.middleware.ts → { traceIdEmpty?: true, matchedText?, cmd?, traceId?,
+//                                          traceIdSuspect?: true }
+//   discipline-write-protection.middleware.ts → { writeOriginalLog: true, cmd }
+
+export interface SofteningWordMatch {
+  word: string;
+  position: number;
+}
+
+export interface OnsiteDisciplineEnvelope {
+  softening?: boolean;
+  words?: SofteningWordMatch[];
+  traceIdEmpty?: boolean;
+  traceIdSuspect?: boolean;
+  writeOriginalLog?: boolean;
+  matchedText?: string;
+  cmd?: string;
+  traceId?: string;
+}
+
+/**
+ * Generic WS frame envelope carrying any of {kind, role, content, discipline}.
+ * `discipline` 由 OnsiteChatStream 用作纪律计数/渲染触发器。
+ */
+export interface OnsiteChatFrame {
+  kind?: string;
+  role?: 'user' | 'assistant' | string;
+  sessionId?: string;
+  id?: string | number;
+  content?: string;
+  text?: string;
+  name?: string;
+  discipline?: OnsiteDisciplineEnvelope;
+}
+
 export type OnsiteServerEvent =
   | OnsiteProblemsChangedEvent
-  | OnsiteProblemStateChangedEvent;
+  | OnsiteProblemStateChangedEvent
+  | OnsiteChatFrame;
 
 // ─── Store helpers (shared between store + WS context) ────────────────────
 

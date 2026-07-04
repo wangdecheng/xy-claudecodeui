@@ -25,7 +25,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Send, StopCircle } from 'lucide-react';
 
-import type { ProblemRecord } from '@shared/onsite-types';
+import type { OnsiteChatFrame, ProblemRecord } from '@shared/onsite-types';
 
 import { cn } from '../../lib/utils';
 import { useOnsiteStore } from '../../stores/onsiteStore';
@@ -106,7 +106,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   // Subscribe to WS frames.
   useEffect(() => {
     return subscribe((event) => {
-      const ev = event as { kind?: string; sessionId?: string; content?: string; role?: string; discipline?: Record<string, unknown>; name?: string };
+      const ev = event as OnsiteChatFrame;
 
       // Only react to frames tagged for this problem.
       if (ev.sessionId && ev.sessionId !== problemId) return;
@@ -116,24 +116,25 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
       // Discipline tally — single source of truth lives here and flows to
       // <DisciplineCounter> via props.
-      if (ev.discipline && typeof ev.discipline === 'object') {
-        const d = ev.discipline as Record<string, unknown>;
+      if (ev.discipline) {
+        const d = ev.discipline;
         setDiscipline((cur) => {
           const softening = cur.softening + (d.softening === true ? 1 : 0);
           const writeOriginalLog = cur.writeOriginalLog + (d.writeOriginalLog === true ? 1 : 0);
           const ts = Date.now();
           const append: DisciplineLogEntry[] = [];
           if (d.softening === true) {
+            const word = d.words?.[0]?.word ?? '';
             append.push({
               ts,
-              word: typeof d.word === 'string' ? d.word : '',
+              word,
               kind: 'softening',
             });
           }
           if (d.writeOriginalLog === true) {
             append.push({
               ts,
-              word: typeof d.word === 'string' ? d.word : '',
+              word: d.cmd ?? '',
               kind: 'writeOriginalLog',
             });
           }

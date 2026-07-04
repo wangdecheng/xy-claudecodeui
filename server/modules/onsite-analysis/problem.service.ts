@@ -19,6 +19,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+import { getConfig } from './config.service.js';
 
 export class CwdEscapeError extends Error {
   readonly code = 'CWD_ESCAPE';
@@ -212,7 +213,7 @@ export const problemService = {
         id: deriveIdFromDirName(entry.name),
         customer,
         third_bridge_branch: thirdBridgeBranch,
-        iteration: iteration ?? 'master_5.2_3.2',
+        iteration: iteration ?? resolveDefaultIteration(),
         database: database ?? '',
         status,
         cwd: dirPath,
@@ -258,4 +259,18 @@ function formatYyyymmdd(date: Date): string {
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
   return `${y}${m}${d}`;
+}
+
+/**
+ * 取 config.iterations[0] 作为缺省 iteration(用于扫到老 problem 目录没写
+ * problem.json / 没写 iteration 字段时)。若 config 加载失败,降级为空串,
+ * 上层 UI 会显示"未指定"并触发状态机迁移到 pending_info。
+ */
+function resolveDefaultIteration(): string {
+  try {
+    const cfg = getConfig();
+    return cfg.data.iterations[0] ?? '';
+  } catch {
+    return '';
+  }
 }
