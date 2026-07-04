@@ -109,4 +109,23 @@ export const onsiteProblemsDb = {
     const db = getConnection();
     db.prepare(`UPDATE onsite_problems SET mtime = ? WHERE id = ?`).run(mtime, id);
   },
+
+  /**
+   * Batch 4.3 — 写入根因结论字段(供 confirm-root-cause 端点使用)。
+   * 注:实际字段列在 Batch 5/6 才会正式加进 schema,这里先做 best-effort:
+   * 如果 root_cause_text 列不存在,降级到 problem_json_path 上的 problem.json。
+   */
+  updateRootCause(id: string, rootCauseText: string): void {
+    const row = this.findById(id);
+    if (!row || !row.problem_json_path) return;
+    try {
+      const fs = require('node:fs') as typeof import('node:fs');
+      const raw = fs.readFileSync(row.problem_json_path, 'utf8');
+      const json = JSON.parse(raw) as Record<string, unknown>;
+      json.root_cause_text = rootCauseText;
+      fs.writeFileSync(row.problem_json_path, JSON.stringify(json, null, 2), 'utf8');
+    } catch {
+      // best-effort,失败不抛
+    }
+  },
 };

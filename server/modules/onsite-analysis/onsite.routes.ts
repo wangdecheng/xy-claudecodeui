@@ -17,7 +17,9 @@
 import express, { type Request, type Response } from 'express';
 
 import { onsiteFilesDb } from '@/modules/database/repositories/onsite-files.db.js';
+import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 import { getConfig } from './config.service.js';
+import { disciplineSofteningMiddleware } from './discipline/discipline-softening.middleware.js';
 import { onsiteBroadcast } from './onsite-broadcast.js';
 import {
   CwdEscapeError,
@@ -260,6 +262,108 @@ router.patch('/problems/:id', (req: Request, res: Response) => {
       }
       const message = err instanceof Error ? err.message : 'apply failed';
       res.status(500).json({ error: 'APPLY_FAILED', message });
+    });
+});
+
+// ---------------------------------------------------------------------------
+// POST /api/onsite/problems/:id/confirm-root-cause (Batch 4.3)
+// ---------------------------------------------------------------------------
+//
+// 在 problem 进入 'analyzing' 后,由分析师/工程师提交根因结论。
+// 纪律闸门:含软化词 → 422 + words 列表(不调 StateMachine);
+// reason < 8 字符 → 400。
+// 通过 → StateMachine.apply(id, 'confirmed', reason, actorId) + broadcast。
+
+type ConfirmRootCauseBody = {
+  root_cause_text?: unknown;
+  reason?: unknown;
+};
+
+router.post('/problems/:id/confirm-root-cause', (req: Request, res: Response) => {
+  const id = req.params.id;
+  const body = (req.body ?? {}) as ConfirmRootCauseBody;
+
+  // 1) root_cause_text 非空
+  if (typeof body.root_cause_text !== 'string' || body.root_cause_text.trim().length === 0) {
+    return res.status(400).json({
+      error: 'ROOT_CAUSE_TEXT_REQUIRED',
+      message: 'root_cause_text is required and must be a non-empty string',
+    });
+  }
+
+  // 2) reason ≥ 8 字符(用 state-machine 的 MIN_REASON_LENGTH 校验一致)
+  if (typeof body.reason !== 'string' || body.reason.trim().length < 8) {
+    return res.status(400).json({
+      error: 'REASON_TOO_SHORT',
+      message: 'reason is required and must be at least 8 characters after trim',
+      minLength: 8,
+    });
+  }
+
+  const rootCauseText = body.root_cause_text as string;
+  const reason = body.reason as string;
+  const actorId =
+    typeof (req as Request & { user?: { id?: string | number } }).user?.id === 'string' ||
+    typeof (req as Request & { user?: { id?: string | number } }).user?.id === 'number'
+      ? String((req as Request & { user?: { id?: string | number } }).user!.id)
+      : null;
+
+  // 3) 软化词闸门 — 命中 → 422,不调 StateMachine
+  const matches = disciplineSofteningMiddleware.findWords(rootCauseText);
+  if (matches.length > 0) {
+    return res.status(422).json({
+      error: 'softening_words_present',
+      message: 'root_cause_text 包含软化词,请改用确定性结论',
+      words: matches.map((m) => ({ word: m.word, position: m.position })),
+    });
+  }
+
+  // 4) StateMachine.apply → 事务化迁移 analyzing → confirmed + audit + problem.json
+  applyState(id, 'confirmed', reason, actorId)
+    .then((result) => {
+      onsiteBroadcast.broadcast({
+        type: `problem:${id}:state-changed`,
+        payload: {
+          id,
+          from: result.from,
+          to: result.to,
+          reason,
+          at: result.at,
+        },
+      });
+
+      // 把 root_cause_text 落库(后续 UI/审计读用)
+      try {
+        onsiteProblemsDb.updateRootCause(id, rootCauseText);
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[confirm-root-cause] failed to persist root_cause_text for ${id}: ${message}`);
+      }
+
+      res.json({ ...result, root_cause_text: rootCauseText });
+    })
+    .catch((err: unknown) => {
+      if (err instanceof ReasonTooShortError) {
+        return res.status(400).json({
+          error: err.code,
+          message: err.message,
+          minLength: err.minLength,
+        });
+      }
+      if (err instanceof ProblemNotFoundError) {
+        return res.status(404).json({ error: err.code, message: err.message });
+      }
+      if (err instanceof InvalidStateTransitionError) {
+        return res.status(409).json({
+          error: err.code,
+          message: err.message,
+          from: err.from,
+          to: err.to,
+          allowed: err.allowed,
+        });
+      }
+      const message = err instanceof Error ? err.message : 'confirm-root-cause failed';
+      res.status(500).json({ error: 'CONFIRM_ROOT_CAUSE_FAILED', message });
     });
 });
 
