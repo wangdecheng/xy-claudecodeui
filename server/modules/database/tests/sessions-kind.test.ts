@@ -25,7 +25,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '../connection.js';
+import { closeConnection, getConnection } from '../connection.js';
 import { sessionsDb, assertSessionKind, InvalidSessionKindError } from '../repositories/sessions.db.js';
 import { initSchemaWithMigrations } from './helpers/test-schema.js';
 
@@ -93,12 +93,34 @@ test('createOnsiteSession 写入 kind=onsite + cwd + third_bridge_branch + itera
     });
     assert.equal(id, 's-onsite-1');
 
-    // Use raw DB to read all columns — sessionsDb.getSessionById doesn't
-    // expose kind/cwd/... yet because chat-side readers don't need them.
-    const row = sessionsDb.getSessionById('s-onsite-1');
-    assert.ok(row);
+    // Direct DB read — sessionsDb.getSessionById projects through
+    // SESSION_ROW_COLUMNS which excludes kind/cwd/..., so a row that
+    // exists doesn't prove the I-9 contract columns were set. Query the
+    // raw row to assert the actual contract.
+    const row = getConnection()
+      .prepare(
+        `SELECT session_id, project_path, kind, cwd, third_bridge_branch, iteration, database
+         FROM sessions WHERE session_id = ?`,
+      )
+      .get('s-onsite-1') as
+      | {
+          session_id: string;
+          project_path: string;
+          kind: string;
+          cwd: string;
+          third_bridge_branch: string | null;
+          iteration: string;
+          database: string;
+        }
+      | undefined;
+    assert.ok(row, 'onsite session row 应存在');
     assert.equal(row?.session_id, 's-onsite-1');
     assert.equal(row?.project_path, '/work/project');
+    assert.equal(row?.kind, 'onsite', 'kind 列必须存为 onsite');
+    assert.equal(row?.cwd, '/work/project/customer-x');
+    assert.equal(row?.third_bridge_branch, 'master_5.2_3.2');
+    assert.equal(row?.iteration, 'master_5.2_3.2');
+    assert.equal(row?.database, 'db01');
   });
 });
 
@@ -116,6 +138,22 @@ test('createOnsiteSession kind 列存为 onsite(直接查 DB)', async () => {
     assert.equal(rows.length, 1);
     const sid = rows[0]?.session_id;
     assert.equal(sid, 's-onsite-2');
+
+    // Also verify kind/cwd/... directly — these columns aren't in
+    // SESSION_ROW_COLUMNS so getSessionById can't see them.
+    const raw = getConnection()
+      .prepare(
+        `SELECT kind, cwd, third_bridge_branch, iteration, database FROM sessions WHERE session_id = ?`,
+      )
+      .get('s-onsite-2') as
+      | { kind: string; cwd: string; third_bridge_branch: string | null; iteration: string; database: string }
+      | undefined;
+    assert.ok(raw, 'raw row 应存在');
+    assert.equal(raw?.kind, 'onsite');
+    assert.equal(raw?.cwd, '/work/project/yyyy');
+    assert.equal(raw?.third_bridge_branch, null);
+    assert.equal(raw?.iteration, 'master_5.2_3.2');
+    assert.equal(raw?.database, 'db02');
   });
 });
 
