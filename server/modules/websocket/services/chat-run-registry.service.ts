@@ -26,6 +26,8 @@ type ChatRunStatus = 'running' | 'completed';
  *   monotonically increasing `seq` and is buffered so a reconnecting client
  *   can replay exactly the events it missed via `chat.subscribe`.
  */
+type ChatRunKind = 'chat' | 'onsite';
+
 type ChatRun = {
   appSessionId: string;
   provider: LLMProvider;
@@ -36,6 +38,13 @@ type ChatRun = {
   writer: ChatSessionWriter;
   startedAt: number;
   completedAt: number | null;
+  /**
+   * Routing tag for discipline middleware attachment:
+   *  - 'chat'   → 默认;chat 路径,中间件不挂
+   *  - 'onsite' → onsite 路径,discipline 中间件链会读取 ws.kind 决定是否挂
+   * Batch 4 起新增;不改 chat 调用处行为(不传则默认 'chat')。
+   */
+  kind: ChatRunKind;
 };
 
 /**
@@ -208,6 +217,10 @@ export const chatRunRegistry = {
   /**
    * Starts tracking a run and returns it, or `null` when a run is already in
    * progress for the session (callers must reject the duplicate send).
+   *
+   * `kind` defaults to 'chat' so existing chat callers are unaffected.
+   * Onsite websocket service passes `kind: 'onsite'` so discipline middlewares
+   * (softening / traceId / write-protection) can be attached by ws.kind === 'onsite'.
    */
   startRun(input: {
     appSessionId: string;
@@ -215,11 +228,14 @@ export const chatRunRegistry = {
     providerSessionId: string | null;
     connection: RealtimeClientConnection;
     userId: string | number | null;
+    kind?: ChatRunKind;
   }): ChatRun | null {
     const existing = runs.get(input.appSessionId);
     if (existing && existing.status === 'running') {
       return null;
     }
+
+    const kind: ChatRunKind = input.kind === 'onsite' ? 'onsite' : 'chat';
 
     const run: ChatRun = {
       appSessionId: input.appSessionId,
@@ -231,6 +247,7 @@ export const chatRunRegistry = {
       writer: null as unknown as ChatSessionWriter,
       startedAt: Date.now(),
       completedAt: null,
+      kind,
     };
 
     run.writer = new ChatSessionWriter({
@@ -250,6 +267,14 @@ export const chatRunRegistry = {
 
   getRun(appSessionId: string): ChatRun | undefined {
     return runs.get(appSessionId);
+  },
+
+  /**
+   * 返回某个 run 的 kind,用于 discipline 中间件决定是否挂载。
+   * 未知 sessionId 返 undefined。
+   */
+  getRunKind(appSessionId: string): ChatRunKind | undefined {
+    return runs.get(appSessionId)?.kind;
   },
 
   isProcessing(appSessionId: string): boolean {
