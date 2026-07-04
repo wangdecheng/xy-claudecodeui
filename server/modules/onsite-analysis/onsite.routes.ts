@@ -38,6 +38,7 @@ import {
   problemService,
   sanitizeCustomerLabel,
 } from './problem.service.js';
+import { messagesStore } from './messages-store.service.js';
 import {
   InvalidStateTransitionError,
   ProblemNotFoundError,
@@ -524,6 +525,30 @@ router.get('/problems/:id/files', async (req, res) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'list files failed';
     res.status(500).json({ error: 'LIST_FILES_FAILED', message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/onsite/problems/:id/messages (Batch 8 I1)
+// ---------------------------------------------------------------------------
+//
+// 返回该 problem 最近 500 条 chat 消息(server 端 ring buffer,正序)。
+// 写入路径在 onsite-websocket.service.ts:attachHelloContext 包 ws.send。
+// 401 由 mount 点 authenticateToken 处理。
+
+router.get('/problems/:id/messages', async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    const problem = await problemService.getById(id);
+    if (!problem) {
+      return res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
+    }
+    const messages = messagesStore.getByProblemId(id);
+    res.json({ problem_id: id, messages });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : 'list messages failed';
+    res.status(500).json({ error: 'LIST_MESSAGES_FAILED', message });
   }
 });
 

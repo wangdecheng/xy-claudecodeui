@@ -22,6 +22,7 @@ import path from 'node:path';
 import type { WebSocket, WebSocketServer } from 'ws';
 
 import { assertCwdUnderRoot, resolveOnsiteRoot } from '@/modules/onsite-analysis/problem.service.js';
+import { messagesStore, type StoredMessage } from '@/modules/onsite-analysis/messages-store.service.js';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -116,11 +117,50 @@ type HelloContext = {
  * 把 hello 上下文写到 ws 上,供 discipline 中间件在 send 拦截时取用。
  * 注意:这里**不会**自动开启 chat run;后续业务消息由客户端通过 chat.send
  * 触发(以保证 onsite 与 chat 协议完全一致 — 只有首帧验证是 onsite 特有的)。
+ *
+ * 还会包一层 ws.send:对 ws.kind === 'onsite' 的 outbound envelope,
+ * 若 kind ∈ {text, tool_use, tool_result} 且 role ∈ {user, assistant} → 落 messagesStore。
+ * 这是 Batch 8 I1 的服务端持久化入口,放在这里确保不污染 chat 路径。
  */
 function attachHelloContext(ws: WebSocket, ctx: HelloContext): void {
   // 给 ws 打上 kind 标记 — discipline 中间件的 enabledFor(ws) 据此决定是否挂
   (ws as WebSocket & { kind?: string }).kind = 'onsite';
   (ws as WebSocket & { onsite?: HelloContext }).onsite = ctx;
+
+  const originalSend = ws.send.bind(ws);
+  ws.send = ((data: unknown, ...args: unknown[]) => {
+    if (typeof data === 'string') {
+      try {
+        const parsed = JSON.parse(data) as Record<string, unknown>;
+        const kind = parsed.kind;
+        const role = parsed.role;
+        if (
+          (kind === 'text' || kind === 'tool_use' || kind === 'tool_result') &&
+          (role === 'user' || role === 'assistant')
+        ) {
+          const content = typeof parsed.content === 'string'
+            ? parsed.content
+            : (typeof parsed.text === 'string' ? parsed.text : '');
+          const ts = typeof parsed.ts === 'number' ? parsed.ts : Date.now();
+          const stored: StoredMessage = {
+            problemId: ctx.problemId,
+            role,
+            kind: kind as StoredMessage['kind'],
+            content,
+            ts,
+          };
+          try {
+            messagesStore.append(stored);
+          } catch {
+            /* ignore — store failure must not break send */
+          }
+        }
+      } catch {
+        /* ignore parse failures */
+      }
+    }
+    return originalSend(data as never, ...(args as []));
+  }) as WebSocket['send'];
 }
 
 /**
