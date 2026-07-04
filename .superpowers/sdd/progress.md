@@ -36,6 +36,12 @@
 | Task 4.4.a | complete(review approved) | 82a4fe3 | `discipline-trace-id.middleware.ts` 主信号 + 强信号 + 13 个测试(60s grep 反误报 + grep 家族 0 命中 + applyBlocked 端到端) |
 | Task 4.4.b | complete(review approved) | b04bcee | 同文件加 suspect 信号(cat/find/python/head/tail/wc 空文件) + 6 个测试(不调 applyBlocked) |
 | Task 4.5 | complete(review approved) | 32ace22 | `discipline-write-protection.middleware.ts` 双正则(写动作 + 原日志路径)+ 11 个测试(命中 + 不命中 + 软审计 + chat 路径隔离) |
+| Task 5.A | complete(review approved) | 4a78773 | **Wiring (Batch 4 必备项)**: `server/index.js` 接 `onsiteWebSocketService.attach(wss)` + `/onsite/ws` 路径分支 + 3 middlewares 挂到 `ChatSessionWriter` 出站路径(idempotent flag `__onsiteDisciplineAttached`) |
+| Task 5.B | complete(review approved) | e9b22e9 | `onsite-path-blacklist.service.ts` 7 glob × 7 写动作 → SDK `disallowedTools` 注入;chat 路径不调;`claude-sdk.js` 不动 |
+| Task 5.C | complete(review approved) | b095625 | `log-unpack.service.ts` `unpackMany` 1 zip → 1 unpacked-N/,200MB/20 文件上限,损坏 zip 删目录回滚 |
+| Task 5.D | complete(review approved) | a907415 | `POST /api/onsite/problems/:id/files` multer + 207 multi-status,`GET` 已存在 |
+| Task 5.E | complete(review approved) | 590755e | `root_cause_text` 列 + migration `006_add_root_cause_text`,去掉 `updateRootCause` 的 `require('node:fs')` hack |
+| Task 5.fix.1 | complete(review approved) | 12ce5ce | **Review followup + flake fix**: `onsite-upload-routes.test.ts` corrupted zip 测试改 order-independent 断言(Node 22 + multer 2.x 重排 req.files);`withIsolatedEnv` 去掉 `if (!previousRoot)` 并发守卫 |
 
 ## Review Verdict — Batch 2
 
@@ -98,11 +104,45 @@
 - **Workflow**: `full`
 - **Mode**: `SDD`
 - **Contract**: 已批准(2026-07-03)
-- **Batches Completed**: 5 / 9(Batch 0~4;Batch 5~8 + 5.5 待跑)
-- **当前 commit**: `32ace22`(Batch 4 完结)
-- **Pre-existing failure**:
-  - `provider-models.service.test.ts`(main 上 fail,与 chat 路径无关)
-  - `config.service.watch.test.ts:53` mtime 测试 flaky(macOS 1ms mtime 解析)
+- **Batches Completed**: 6 / 9(Batch 0~5;Batch 5.5 + 6~8 待跑)
+- **当前 commit**: `12ce5ce`(Batch 5 + flake fix 完结)
+- **Pre-existing failure**:`provider-models.service.test.ts`(main 上 fail,与 chat 路径无关)
+
+## Review Verdict — Batch 5
+
+- **Verdict**: ✅ Approved(代码层),1 flake 修复后 305/1 稳定 3 轮
+- **Critical**: 0(flake 修后)
+- **Important**: 2(均已修)
+- **Minor**: 2(记 follow-up)
+
+### Important 处置
+
+1. **(已修,本批次 fix 1) Upload-routes corrupted zip 测试并发 flake**: `multer 2.x` 在 Node 22 上重排 `req.files` 顺序,导致 `unpacked-N/` idx 不固定。修法:按 `originalName` 匹配而非 index 断言;`withIsolatedEnv` 去掉 `if (!previousRoot)` 并发守卫 — `12ce5ce`
+2. **(已记 follow-up) getTraceId closure 类型不严格**: `(ws) => loadTraceId(...)` JS 允许 extra args,运行正常但 TS 严格模式可能报。下次 refactor 收紧类型签名
+
+### Minor 处置
+
+- `onsite-path-blacklist.service.ts` 省略 `>` redirect 与 `python open` pattern:文档说明 SDK 自己处理 shell 重定向 + 软层 `discipline-write-protection.middleware` 通过 `WRITE_ACTION_REGEX` 仍捕获 `>`。spec brief 后续需更新反映刻意分层
+- multer 413 测试间接覆盖但缺单包 250MB 直接测试 — Batch 5.5 或 Batch 8 补
+
+### Cross-cutting
+
+- **Chat path unchanged**: 305 pass / 1 fail(只剩 provider-models pre-existing)
+- **Server boot succeeds**: 无启动崩溃
+- **新依赖**: `multer ^2.0.1` 已在 root `package.json:179` 声明
+
+### Forward Compatibility
+
+**Batch 5.5 (chat regression gate)**:
+- baseline 已更新到 `305/1`
+- diff-chat-impact 可比较 BASE_SHA=6a88025..HEAD 的 chat 关键文件
+- e2e 可跑
+
+**Batch 6 (frontend)**:
+- 所有 REST 端点已挂载
+- WS 已可连 `/onsite/ws`
+- discipline envelope flag schema 已稳定(`{softening, traceIdEmpty, traceIdSuspect, writeOriginalLog}`)
+- `root_cause_text` 列已落库,UI 可渲染
 
 ## Review Verdict — Batch 4
 
@@ -133,7 +173,7 @@
 - [x] Batch 2 收尾 → 进 Batch 3(检查点复审修复完成)
 - [x] Batch 3 收尾 → 进 Batch 4(纪律护栏核心)
 - [x] Batch 4 收尾 → 进 Batch 5(wiring 必备项已列出)
-- [ ] Batch 5 收尾 → 进 Batch 5.5(chat 回归门禁)
+- [x] Batch 5 收尾 → 进 Batch 5.5(chat 回归门禁 + flake 修后)
 - [ ] Batch 5.5 收尾 → 进 Batch 6
 - [ ] Batch 7 收尾 → 进 Batch 8
 - [ ] Batch 8 收尾 → 进 release-archivist
