@@ -9,6 +9,12 @@
  *  - when selectedCustomer is the first option (branch === null), omit
  *    `third_bridge_branch` from POST /problems (server treats explicit
  *    null differently from missing — see problem.service.ts).
+ *  - **no-third-party cwd resolution**: when matched.branch is null
+ *    (e.g. "不涉及三方对接"), we send `cwd: customer` (the label).
+ *    The server's `assertCwdUnderRoot` resolves that against
+ *    `~/work/customer-onsite-analysis/`, which yields a path that IS
+ *    under root (no `..` segment), so no throw. The directory name then
+ *    becomes `YYYYMMDD-<label>`. Verified in Batch 8 I2 — not a bug.
  *  - LogUploader is optional and disabled until the problem exists.
  *  - submit → POST /problems → on success reload list and close.
  */
