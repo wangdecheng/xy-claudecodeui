@@ -536,6 +536,14 @@ export const runMigrations = (db: Database) => {
  * constraint is enforced at the application layer (sessionsDb validates
  * kind before write). On fresh installs the CHECK is part of
  * SESSIONS_TABLE_SCHEMA_SQL.
+ *
+ * **Not tracked by ONSITE_MIGRATION_STEPS / SHA integrity check.** The ALTER
+ * statements below are intentionally NOT exposed as a migration step because
+ * SQLite's ALTER TABLE cannot be hashed consistently from a fixed string
+ * (the statement either no-ops via the column-already-exists PRAGMA check, or
+ * it adds the column — there is no stable "DDL body" to hash). Tracking
+ * drift here would mean a false-ok on every edit. The application-layer
+ * `assertSessionKind` guard (sessionsDb) is the real safety net for upgrades.
  */
 const addSessionsKindAndOnsiteColumns = (db: Database): void => {
   const info = getTableInfo(db, 'sessions');
@@ -605,6 +613,12 @@ export type VerifyMigrationsResult =
  * ran, but the underlying SQL changed in a way the integrity check refuses
  * to silently accept. This catches the failure mode where a developer edits
  * a SQL constant without bumping the migration name.
+ *
+ * **Scope**: only DDL statements that produce a stable, hashable SQL body
+ * are tracked here. Idempotent ALTER steps that branch on `PRAGMA table_info`
+ * (notably `addSessionsKindAndOnsiteColumns` for the sessions.kind/cwd/...
+ * columns) are intentionally NOT in ONSITE_MIGRATION_STEPS — see the JSDoc
+ * on `addSessionsKindAndOnsiteColumns` for the rationale.
  *
  * Returns the user_version PRAGMA as `version` on success so callers can
  * log a single number for ops dashboards.
@@ -679,12 +693,22 @@ type MigrationStep = { name: string; sql: string; sha: string };
 const sha256 = (sql: string): string =>
   createHash('sha256').update(sql, 'utf8').digest('hex');
 
-const ONSITE_MIGRATION_STEPS: MigrationStep[] = [
-  {
-    name: '001_add_sessions_kind_and_onsite_columns',
-    sql: 'ADD COLUMN kind / cwd / third_bridge_branch / iteration / database',
-    sha: '',
-  },
+/**
+ * SHA-tracked migration steps. Only DDL statements with a stable SQL body
+ * are listed here. ALTER steps that branch on PRAGMA introspection
+ * (e.g. `addSessionsKindAndOnsiteColumns`) are deliberately excluded —
+ * see the JSDoc on that function for why SQL hashing is unreliable for
+ * those statements.
+ *
+ * Adding a new migration: append a new entry here AND append the
+ * corresponding `db.exec(...)` to the migrateAll transaction in runMigrations.
+ * Changing the SQL body of an existing migration requires either bumping
+ * the `name` or accepting that verifyMigrations will report it as corrupt
+ * on the next startup.
+ *
+ * Exported (read-only) for tests that pin the shape of this list.
+ */
+export const ONSITE_MIGRATION_STEPS: MigrationStep[] = [
   {
     name: '002_create_onsite_problems_table',
     sql: ONSITE_PROBLEMS_TABLE_SCHEMA_SQL,

@@ -119,3 +119,40 @@ test('onsite 表关键索引存在', async () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// C-1 fix: ONSITE_MIGRATION_STEPS no longer contains the ALTER-sessions step
+// ---------------------------------------------------------------------------
+//
+// The sessions kind/cwd/... columns are added via addSessionsKindAndOnsiteColumns
+// in the migrateAll transaction. The ALTER statements cannot be hashed
+// consistently from a fixed string (SQLite ALTER ADD COLUMN is checked via
+// PRAGMA table_info at runtime), so we deliberately exclude them from the
+// SHA-tracked migration steps. This test pins that contract so future contributors
+// don't quietly re-introduce the placeholder.
+
+test('ONSITE_MIGRATION_STEPS 长度 === 4(已删除 ALTER-sessions placeholder step)', async () => {
+  const { ONSITE_MIGRATION_STEPS } = await import('@/modules/database/migrations.js');
+  assert.equal(ONSITE_MIGRATION_STEPS.length, 4);
+});
+
+test('ONSITE_MIGRATION_STEPS 第一项不再是 001_add_sessions_kind_and_onsite_columns', async () => {
+  const { ONSITE_MIGRATION_STEPS } = await import('@/modules/database/migrations.js');
+  const names = ONSITE_MIGRATION_STEPS.map((s) => s.name);
+  assert.ok(
+    !names.includes('001_add_sessions_kind_and_onsite_columns'),
+    'placeholder step 必须从 ONSITE_MIGRATION_STEPS 中移除',
+  );
+  assert.equal(
+    ONSITE_MIGRATION_STEPS[0]?.name,
+    '002_create_onsite_problems_table',
+    '第一步应为 002_create_onsite_problems_table',
+  );
+});
+
+test('ONSITE_MIGRATION_STEPS 每个 step 的 sha 都是非空 hex 字符串', async () => {
+  const { ONSITE_MIGRATION_STEPS } = await import('@/modules/database/migrations.js');
+  for (const step of ONSITE_MIGRATION_STEPS) {
+    assert.ok(step.sha && step.sha.length === 64, `step ${step.name} sha 必须是非空 hex64`);
+  }
+});
