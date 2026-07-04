@@ -33,6 +33,8 @@ import {
 import { useOnsiteStore } from '../stores/onsiteStore';
 import type {
   OnsiteHelloFrame,
+  OnsiteProblemStateChangedEvent,
+  OnsiteProblemsChangedEvent,
   OnsiteServerEvent,
 } from '@shared/onsite-types';
 
@@ -42,6 +44,24 @@ const MAX_BACKOFF_MS = 30_000;
 function nextBackoff(prevMs: number): number {
   const jitter = Math.random() * 0.3 * prevMs;
   return Math.min(MAX_BACKOFF_MS, prevMs * 2 + jitter);
+}
+
+/**
+ * Narrow `OnsiteServerEvent` to the two "control" branches that carry a
+ * `type` discriminator. `OnsiteChatFrame` is the third arm of the union
+ * (it has `kind` instead of `type`) and never reaches the control-event
+ * switch below — runtime gating at `socket.onmessage` keeps chat frames
+ * on the listener path.
+ */
+function isControlEvent(
+  ev: OnsiteServerEvent,
+): ev is OnsiteProblemsChangedEvent | OnsiteProblemStateChangedEvent {
+  return (
+    typeof ev === 'object' &&
+    ev !== null &&
+    'type' in ev &&
+    typeof (ev as { type: unknown }).type === 'string'
+  );
 }
 
 // ─── Context shape ────────────────────────────────────────────────────────
@@ -144,6 +164,12 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
 
   const handleServerEvent = useCallback(
     (event: OnsiteServerEvent): void => {
+      if (!isControlEvent(event)) {
+        // OnsiteChatFrame (or any future frame without `type`) — handled
+        // by dispatchToListeners, never by this control-event switch.
+        return;
+      }
+
       if (event.type === 'problems:changed') {
         void loadProblems();
         return;
