@@ -67,11 +67,11 @@ export interface OnsiteStoreActions {
 
 export interface OnsiteStoreSelectors {
   /** Pick the problem matching `id` (returns undefined if absent). */
-  useProblem: (id: string | null) => ProblemRecord | undefined;
+  getProblem: (id: string | null) => ProblemRecord | undefined;
   /** Pick the upload progress (0..100) for one problem; -1 if not uploading. */
-  useUploadProgress: (id: string) => number;
+  getUploadProgress: (id: string) => number;
   /** True iff any problem currently has uploading[id] defined. */
-  useAnyUploading: () => boolean;
+  getAnyUploading: () => boolean;
 }
 
 export type OnsiteStore = OnsiteStoreState & OnsiteStoreActions & OnsiteStoreSelectors;
@@ -249,8 +249,8 @@ export function useOnsiteStore(): OnsiteStore {
 
   // ─── selectors (snapshot reads) ────────────────────────────────────────
 
-  /** useProblem — returns the matching record or undefined. */
-  const useProblem = useCallback(
+  /** getProblem — returns the matching record or undefined. */
+  const getProblem = useCallback(
     (id: string | null): ProblemRecord | undefined => {
       // Subscribes via tick — the consumer is already inside a render.
       if (!id) return undefined;
@@ -259,11 +259,11 @@ export function useOnsiteStore(): OnsiteStore {
     [], // selectors intentionally no-op deps; they read the ref each render
   );
 
-  const useUploadProgress = useCallback((id: string): number => {
+  const getUploadProgress = useCallback((id: string): number => {
     return stateRef.current.uploading[id] ?? -1;
   }, []);
 
-  const useAnyUploading = useCallback((): boolean => {
+  const getAnyUploading = useCallback((): boolean => {
     return Object.keys(stateRef.current.uploading).length > 0;
   }, []);
 
@@ -285,9 +285,9 @@ export function useOnsiteStore(): OnsiteStore {
       selectProblem,
       patchStatus,
       uploadFiles,
-      useProblem,
-      useUploadProgress,
-      useAnyUploading,
+      getProblem,
+      getUploadProgress,
+      getAnyUploading,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: we re-read stateRef on every tick
   }, [
@@ -297,8 +297,8 @@ export function useOnsiteStore(): OnsiteStore {
     selectProblem,
     patchStatus,
     uploadFiles,
-    useProblem,
-    useUploadProgress,
-    useAnyUploading,
+    getProblem,
+    getUploadProgress,
+    getAnyUploading,
   ]);
 }

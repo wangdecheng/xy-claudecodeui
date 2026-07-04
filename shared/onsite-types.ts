@@ -31,22 +31,24 @@ export const PROBLEM_STATUSES: readonly ProblemStatus[] = [
 /**
  * One problem directory under ONSITE_ROOT. Returned by GET /problems and the
  * single-record GET /problems/:id endpoint. Field names mirror the server
- * payload (snake_case translated to camelCase at the API boundary).
+ * payload verbatim (snake_case on the wire — see
+ * `server/modules/onsite-analysis/problem.service.ts:getById` and
+ * `server/modules/onsite-analysis/onsite.routes.ts`).
  */
 export interface ProblemRecord {
   id: string;
   customer: string;
-  thirdBridgeBranch: string | null;
+  third_bridge_branch: string | null;
   iteration: string;
   database: string;
   status: ProblemStatus;
   cwd: string;
   /** Absolute path to the on-disk problem.json. null until the file lands. */
-  problemJsonPath: string | null;
+  problem_json_path: string | null;
   /** ISO timestamp the row was created; set server-side. */
-  createdAt?: string;
+  created_at?: string;
   /** Optional: only populated after confirm-root-cause (Batch 4.3). */
-  rootCauseText?: string | null;
+  root_cause_text?: string | null;
 }
 
 /**
@@ -78,19 +80,19 @@ export type OnsiteFileKind = 'archive' | 'log' | 'image' | 'other';
 
 export interface OnsiteFile {
   id: string;
-  problemId: string;
-  originalName: string;
+  problem_id: string;
+  original_name: string;
   size: number;
   kind: OnsiteFileKind;
-  unpackedDir?: string;
-  uploadedAt: string;
+  unpacked_dir?: string;
+  uploaded_at: string;
 }
 
 /** Per-file result returned by POST /problems/:id/files (207 multi-status). */
 export interface UploadResult {
   ok: boolean;
-  originalName: string;
-  unpackedDir?: string;
+  original_name: string;
+  unpacked_dir?: string;
   size?: number;
   error?: string;
 }

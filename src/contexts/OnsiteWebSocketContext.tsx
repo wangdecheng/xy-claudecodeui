@@ -267,13 +267,28 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
 
 function readUserIdFromLocalStorage(): string | null {
   if (typeof localStorage === 'undefined') return null;
+  // The canonical auth key is `auth-token` (see
+  // `src/components/auth/constants.ts:AUTH_TOKEN_STORAGE_KEY`); `auth-user`
+  // is never written anywhere, so we must derive the userId from the JWT
+  // payload instead. The body is base64url-encoded JSON — no signature check
+  // is needed client-side (the server still verifies on every request).
+  const token = localStorage.getItem('auth-token');
+  if (!token) return null;
   try {
-    const raw = localStorage.getItem('auth-user');
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { id?: unknown };
-    if (typeof parsed.id === 'string' || typeof parsed.id === 'number') {
-      return String(parsed.id);
-    }
+    const parts = token.split('.');
+    if (parts.length !== 3) return null;
+    const payload = parts[1];
+    if (!payload) return null;
+    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      Array.from(atob(b64))
+        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .join(''),
+    );
+    const parsed = JSON.parse(json) as { sub?: unknown; id?: unknown };
+    if (typeof parsed.sub === 'string') return parsed.sub;
+    if (typeof parsed.id === 'string') return parsed.id;
+    if (typeof parsed.id === 'number') return String(parsed.id);
     return null;
   } catch {
     return null;
