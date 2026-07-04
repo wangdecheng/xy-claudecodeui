@@ -1,0 +1,46 @@
+{
+  "nav": {
+    "onsite": "🔍 客户现场分析"
+  },
+  "wizard": {
+    "title": "新建客户现场问题",
+    "customer": "客户",
+    "customerPlaceholder": "请选择客户",
+    "thirdPartyHint": "三平台分支(可选)",
+    "noThirdParty": "无三平台分支",
+    "iteration": "版本",
+    "iterationPlaceholder": "请选择版本",
+    "database": "数据库",
+    "databasePlaceholder": "请输入数据库名",
+    "upload": "上传日志/资料(可选)",
+    "uploadHint": "支持 .zip / .tar.gz,单文件 ≤ 200MB,最多 20 个",
+    "submit": "创建问题",
+    "createSuccess": "问题创建成功",
+    "createFailed": "创建失败,请稍后重试"
+  },
+  "status": {
+    "pending_info": "待补充信息",
+    "analyzing": "分析中",
+    "blocked": "已阻塞",
+    "confirmed": "已确认根因",
+    "abandoned": "已废弃"
+  },
+  "error": {
+    "configInvalid": "客户配置无效或尚未加载",
+    "networkError": "网络错误,请稍后重试",
+    "uploadFailed": "上传失败",
+    "reasonTooShort": "变更原因至少 8 个字符",
+    "invalidTransition": "不允许的状态迁移"
+  },
+  "discipline": {
+    "softeningTag": "检测到软化词,请改用确定性结论",
+    "suspectToast": "本次根因摘要可能不准确,建议复核证据",
+    "writeProtectionCounter": "当前根因已锁定,如需修改请联系管理员"
+  },
+  "common": {
+    "back": "返回",
+    "loading": "加载中...",
+    "empty": "暂无数据",
+    "retry": "重试"
+  }
+}

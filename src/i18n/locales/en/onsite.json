@@ -1,0 +1,46 @@
+{
+  "nav": {
+    "onsite": "🔍 Customer Onsite Analysis"
+  },
+  "wizard": {
+    "title": "New Customer Onsite Problem",
+    "customer": "Customer",
+    "customerPlaceholder": "Select a customer",
+    "thirdPartyHint": "Third-party branch (optional)",
+    "noThirdParty": "No third-party branch",
+    "iteration": "Iteration",
+    "iterationPlaceholder": "Select an iteration",
+    "database": "Database",
+    "databasePlaceholder": "Enter database name",
+    "upload": "Upload logs / artifacts (optional)",
+    "uploadHint": ".zip / .tar.gz supported, ≤ 200MB per file, up to 20 files",
+    "submit": "Create problem",
+    "createSuccess": "Problem created",
+    "createFailed": "Failed to create, please retry"
+  },
+  "status": {
+    "pending_info": "Awaiting info",
+    "analyzing": "Analyzing",
+    "blocked": "Blocked",
+    "confirmed": "Root cause confirmed",
+    "abandoned": "Abandoned"
+  },
+  "error": {
+    "configInvalid": "Customer config is invalid or not loaded yet",
+    "networkError": "Network error, please retry",
+    "uploadFailed": "Upload failed",
+    "reasonTooShort": "Reason must be at least 8 characters",
+    "invalidTransition": "Disallowed status transition"
+  },
+  "discipline": {
+    "softeningTag": "Softening words detected — please use a deterministic conclusion",
+    "suspectToast": "This root cause summary may be inaccurate — please verify the evidence",
+    "writeProtectionCounter": "Root cause is currently locked. Contact an admin to modify."
+  },
+  "common": {
+    "back": "Back",
+    "loading": "Loading...",
+    "empty": "No data",
+    "retry": "Retry"
+  }
+}
