@@ -1,35 +1,46 @@
 /**
- * OnsiteLayout — placeholder for Batch 6.
+ * OnsiteLayout — real layout for the Customer Onsite Analysis feature
+ * (Batch 7). Replaces the Batch 6 placeholder.
  *
- * Batch 7 replaces this with the real layout: IssueListSidebar on the left,
- * NewIssueWizard, OnsiteChatStream, and the four cards (Evidence /
- * Blocked / RootCause / Sql). For now we render a stable container so the
- * `/onsite` and `/onsite/:problemId` routes resolve without crashing.
+ * Structure:
+ *   ┌─ IssueListSidebar (300px) ─┬─ main: <OnsiteChatStream /> or empty ─┐
  *
- * Contract markers: a `data-testid` is provided so smoke / e2e tests can
- * confirm the placeholder is mounted, and so Batch 7's selector stays
- * stable across the swap.
+ * Routes:
+ *   /onsite                  → no problem selected
+ *   /onsite/:problemId       → chat for that problem
+ *
+ * The layout does NOT mount <OnsiteWebSocketProvider /> — that lives at the
+ * App root (App.tsx) so a single socket is shared across navigation.
  */
 
 import { useParams } from 'react-router-dom';
+
+import IssueListSidebar from '../IssueListSidebar';
+import OnsiteChatStream from '../OnsiteChatStream';
 
 export default function OnsiteLayout() {
   const { problemId } = useParams<{ problemId?: string }>();
 
   return (
     <div
-      data-testid="onsite-layout-placeholder"
-      className="flex h-full w-full items-center justify-center bg-background text-muted-foreground"
+      data-testid="onsite-layout"
+      className="flex h-full w-full bg-background text-foreground"
     >
-      <div className="max-w-md rounded-lg border border-dashed border-border bg-card p-6 text-center">
-        <h2 className="text-lg font-semibold text-foreground">客户现场分析 / Customer Onsite Analysis</h2>
-        <p className="mt-2 text-sm">
-          {problemId
-            ? `Batch 7 placeholder — problem: ${problemId}`
-            : 'Batch 7 placeholder — no problem selected'}
-        </p>
-        <p className="mt-1 text-xs opacity-70">布局由 Batch 7 接管 (Issue list + chat + cards)</p>
-      </div>
+      <IssueListSidebar currentProblemId={problemId ?? null} />
+      <main className="flex-1 min-w-0 overflow-hidden" data-testid="onsite-main">
+        {problemId ? (
+          <OnsiteChatStream key={problemId} problemId={problemId} />
+        ) : (
+          <div className="flex h-full items-center justify-center p-6">
+            <div className="max-w-md rounded-lg border border-dashed border-border bg-card p-6 text-center">
+              <h2 className="text-lg font-semibold">🔍 {problemId ? problemId : 'No problem selected'}</h2>
+              <p className="mt-2 text-sm text-muted-foreground">
+                从左侧选择一个客户现场问题,或点击「+」新建。
+              </p>
+            </div>
+          </div>
+        )}
+      </main>
     </div>
   );
 }

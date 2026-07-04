@@ -46,6 +46,8 @@ function nextBackoff(prevMs: number): number {
 
 // ─── Context shape ────────────────────────────────────────────────────────
 
+export type OnsiteServerEventListener = (event: { kind?: string; type?: string; [k: string]: unknown }) => void;
+
 export type OnsiteWebSocketContextValue = {
   /** True when the WS is currently in OPEN state. */
   isConnected: boolean;
@@ -58,6 +60,14 @@ export type OnsiteWebSocketContextValue = {
   setHelloContext: (problemId: string, cwd: string) => void;
   /** Send a raw JSON frame. Returns false if the socket is not open. */
   send: (frame: unknown) => boolean;
+  /**
+   * Subscribe to inbound frames from the onsite WS (problems:changed,
+   * problem:<id>:state-changed, plus the chat-stream frames the server
+   * routes through /onsite/ws for this problem). Returns an unsubscribe
+   * function. This is the primary consumer API; frames are dispatched
+   * synchronously so rapid back-to-back events are never coalesced.
+   */
+  subscribe: (listener: OnsiteServerEventListener) => () => void;
 };
 
 const OnsiteWebSocketContext = createContext<OnsiteWebSocketContextValue | null>(null);
@@ -82,6 +92,11 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
   const unmountedRef = useRef(false);
   const reconnectTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const backoffRef = useRef<number>(INITIAL_BACKOFF_MS);
+
+  // Listener registry — frames are dispatched synchronously to every
+  // listener so high-rate chat streams are never coalesced (the same
+  // pattern chat-WS uses in WebSocketContext.tsx).
+  const listenersRef = useRef<Set<OnsiteServerEventListener>>(new Set());
 
   // Live hello-frame fields — Batch 7 calls setHelloContext to update these.
   const helloRef = useRef<OnsiteHelloFrame>({
@@ -153,6 +168,29 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
     [loadProblems],
   );
 
+  /**
+   * Dispatch a raw inbound frame to every subscriber synchronously.
+   * Used for chat-stream frames (text/tool_use/...) that don't carry a
+   * `type` field — those bypass `handleServerEvent` but still need to
+   * reach OnsiteChatStream subscribers.
+   */
+  const dispatchToListeners = useCallback((event: Record<string, unknown>): void => {
+    for (const listener of listenersRef.current) {
+      try {
+        listener(event as { kind?: string; type?: string });
+      } catch (err) {
+        console.warn('[onsite-ws] listener error:', err);
+      }
+    }
+  }, []);
+
+  const subscribe = useCallback((listener: OnsiteServerEventListener): (() => void) => {
+    listenersRef.current.add(listener);
+    return () => {
+      listenersRef.current.delete(listener);
+    };
+  }, []);
+
   const connect = useCallback(() => {
     if (unmountedRef.current) return;
     if (wsRef.current) {
@@ -194,9 +232,18 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
       try {
         const data = JSON.parse(String(msgEvent.data)) as unknown;
         if (!data || typeof data !== 'object') return;
-        const ev = data as OnsiteServerEvent;
-        if (typeof ev.type !== 'string') return;
-        handleServerEvent(ev);
+        const obj = data as Record<string, unknown>;
+
+        // 1) Type-based site events (problems:changed / problem:<id>:state-changed)
+        //    are still routed through handleServerEvent so the store reacts.
+        if (typeof obj.type === 'string') {
+          handleServerEvent(obj as unknown as OnsiteServerEvent);
+        }
+
+        // 2) Always dispatch to subscribers — OnsiteChatStream needs every
+        //    chat-stream frame (kind: text/tool_use/...) even though they
+        //    don't carry a `type` field.
+        dispatchToListeners(obj);
       } catch (err: unknown) {
         console.warn('[onsite-ws] failed to parse frame:', err);
       }
@@ -254,8 +301,9 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
       reconnectAttempts,
       setHelloContext,
       send,
+      subscribe,
     }),
-    [isConnected, reconnectAttempts, setHelloContext, send],
+    [isConnected, reconnectAttempts, setHelloContext, send, subscribe],
   );
 
   return (
