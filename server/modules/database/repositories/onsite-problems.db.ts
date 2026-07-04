@@ -84,7 +84,19 @@ export const onsiteProblemsDb = {
       .all() as OnsiteProblemListItem[];
   },
 
-  updateStatus(id: string, status: string, _reason: string, _actorId: string | null): void {
+  /**
+   * Update only the `status` column + bump `updated_at`. The "Only" suffix
+   * makes the contract explicit: this method does NOT write an audit row.
+   * Callers that need to record the reason / actor must additionally call
+   * `onsiteStateAuditDb.append(...)` themselves (ideally inside the same
+   * `db.transaction(...)` wrapper to keep the two writes atomic — see
+   * Batch 3 StateMachine work).
+   *
+   * Renamed from `updateStatus(...)` because the previous signature
+   * silently swallowed `_reason` / `_actorId`, inviting the next reader
+   * to assume those were persisted somewhere.
+   */
+  updateStatusOnly(id: string, status: string): void {
     const db = getConnection();
     db.prepare(
       `UPDATE onsite_problems

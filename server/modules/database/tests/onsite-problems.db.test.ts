@@ -104,12 +104,54 @@ test('onsiteProblemsDb.updateStatus 改 status 且刷 updated_at', async () => {
     const before = onsiteProblemsDb.findById(SAMPLE.id);
     assert.equal(before?.status, 'pending_info');
 
-    onsiteProblemsDb.updateStatus(SAMPLE.id, 'analyzing', 'enough info gathered', 'user-1');
+    onsiteProblemsDb.updateStatusOnly(SAMPLE.id, 'analyzing');
 
     const after = onsiteProblemsDb.findById(SAMPLE.id);
     assert.equal(after?.status, 'analyzing');
     assert.ok(after?.updated_at);
   });
+});
+
+// ---------------------------------------------------------------------------
+// I-6 fix: rename `updateStatus` → `updateStatusOnly` and drop the dead
+// `_reason` / `_actorId` parameters.
+// ---------------------------------------------------------------------------
+//
+// Audit-row writes are the caller's responsibility (use
+// `onsiteStateAuditDb.append(...)`); the repo should NOT silently swallow
+// those parameters as it did before — it should accept only the fields the
+// SQL actually updates. The "Only" suffix makes the contract obvious to
+// Batch 3 StateMachine authors.
+
+test('onsiteProblemsDb.updateStatusOnly 改 status 且刷 updated_at(无 audit row)', async () => {
+  await withIsolatedDatabase(() => {
+    onsiteProblemsDb.insert(SAMPLE);
+    const before = onsiteProblemsDb.findById(SAMPLE.id);
+    assert.equal(before?.status, 'pending_info');
+
+    // New signature: (id, status) only — no reason / actorId
+    // The TS type system at compile time rejects extra args; at runtime we
+    // simply call with the reduced form.
+    onsiteProblemsDb.updateStatusOnly(SAMPLE.id, 'analyzing');
+
+    const after = onsiteProblemsDb.findById(SAMPLE.id);
+    assert.equal(after?.status, 'analyzing');
+    assert.ok(after?.updated_at);
+  });
+});
+
+test('onsiteProblemsDb.updateStatusOnly 是 updateStatus 的直接 alias(contract 验证)', () => {
+  // Pin the shape: only two parameters, both required and string-typed.
+  // We can only assert by runtime invocation. A `typeof` check verifies
+  // the function exists; the .length check pins parameter count.
+  assert.equal(typeof onsiteProblemsDb.updateStatusOnly, 'function');
+  // .length === 2 means the signature is `(id, status)` — anything else
+  // means the contract regressed (the _reason / _actorId smell returned).
+  assert.equal(
+    onsiteProblemsDb.updateStatusOnly.length,
+    2,
+    'updateStatusOnly must accept exactly (id, status) — no extra audit params',
+  );
 });
 
 test('onsiteProblemsDb.updateMtime 写入 mtime', async () => {
