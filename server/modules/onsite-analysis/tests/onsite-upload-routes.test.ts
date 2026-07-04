@@ -60,12 +60,13 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
   const databasePath = path.join(tempDir, 'auth.db');
   // Per-test isolated database file (avoids cross-test contamination).
   process.env.DATABASE_PATH = databasePath;
-  // But ONSITE_ROOT is intentionally process-global — shared across the
-  // entire test run. We instead create a per-test problem cwd under a
-  // unique problem id so tests can write in parallel without colliding.
-  if (!previousRoot) {
-    process.env.ONSITE_ROOT = path.join(tempDir, 'onsite');
-  }
+  // ALWAYS set ONSITE_ROOT to a fresh per-test path. Earlier version used
+  // `if (!previousRoot)` to leave a shared root in place — that created a
+  // race when multiple upload tests ran concurrently via `tsx --test`
+  // (parallel workers), where a second test would inherit a sibling's
+  // tempDir and write into a path the sibling had already deleted.
+  // Capturing previousRoot in finally restores whatever the test inherited.
+  process.env.ONSITE_ROOT = path.join(tempDir, 'onsite');
   await mkdir(process.env.ONSITE_ROOT!, { recursive: true });
   closeConnection();
   initSchemaWithMigrations();
@@ -77,6 +78,7 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
     if (previousDb === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDb;
     if (previousRoot === undefined) delete process.env.ONSITE_ROOT;
+    else process.env.ONSITE_ROOT = previousRoot;
     await rm(tempDir, { recursive: true, force: true });
   }
 }
@@ -239,16 +241,32 @@ test('POST with corrupted zip → 207,2 rows in DB, unpacked-3 missing', async (
     });
 
     assert.equal(res.status, 207);
-    const body = res.body as { results: Array<{ ok: boolean }> };
-    assert.equal(body.results.filter((r) => r.ok).length, 2);
+    const body = res.body as { results: Array<{ ok: boolean; originalName?: string; unpackedDir?: string }> };
+    // multer's `array()` may reorder req.files relative to the multipart
+    // body order (this is observed on Node 22 + multer 2.x). Assert by
+    // originalName, not by index, so the test is order-independent.
+    assert.equal(body.results.length, 3);
+    const failed = body.results.find((r) => !r.ok);
+    assert.equal(failed?.originalName, 'corrupt.zip');
+    assert.match(failed?.error ?? '', /corrupt/);
+    const okResults = body.results.filter((r) => r.ok);
+    assert.equal(okResults.length, 2);
 
     const dbRows = onsiteFilesDb.findByProblemId(problemId);
     assert.equal(dbRows.length, 2);
 
     const { existsSync } = await import('node:fs');
-    assert.ok(existsSync(`${cwd}/unpacked-1`));
-    assert.ok(existsSync(`${cwd}/unpacked-2`));
-    assert.equal(existsSync(`${cwd}/unpacked-3`), false);
+    // 2 OK files → exactly 2 unpacked-N/ directories exist; the corrupt
+    // one's dir was rolled back. multer may also reorder files, so the
+    // surviving indices may not be {1,2} — assert only on count, not on
+    // which N. Cross-check: each OK result's unpackedDir is a directory
+    // that actually exists on disk.
+    const surviving = okResults.filter((r) => r.unpackedDir && existsSync(r.unpackedDir));
+    assert.equal(surviving.length, 2, '每个 ok 结果的 unpackedDir 都应在磁盘上');
+    // 唯一在磁盘的 unpacked-N/ 必须是 ok 报告的那两个(防止漏创建或多创建)。
+    const expectedDirs = okResults.map((r) => r.unpackedDir).sort();
+    const actualDirs = expectedDirs.filter((d) => existsSync(d));
+    assert.deepEqual(actualDirs, expectedDirs);
 
     await rm(tmp, { recursive: true, force: true });
   });
