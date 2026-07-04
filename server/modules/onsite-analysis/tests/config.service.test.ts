@@ -17,6 +17,7 @@ import {
   getConfig,
   loadConfig,
   resetConfig,
+  resolveConfigPath,
 } from '../config.service.js';
 
 const FIXTURES_DIR = path.resolve(
@@ -110,4 +111,57 @@ test('loadConfig with relative path resolves from process.cwd()', async () => {
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------------
+// I-3 fix: resolveConfigPath should normalize `.` / `..` segments so that
+// downstream callers (mtime cache, watchConfig path comparison) get a
+// canonical representation regardless of input form.
+// ---------------------------------------------------------------------------
+
+test('resolveConfigPath 相对路径含 ./ 被 normalize', () => {
+  const previousCwd = process.cwd();
+  // Use a directory we can both chdir to AND reliably compute. On macOS
+  // /tmp is a symlink to /private/tmp, so chdir to a known canonical place
+  // and use process.cwd() (post-chdir) to compute the expected result —
+  // that's exactly what the implementation does too.
+  const dir = path.dirname(previousCwd);
+  process.chdir(dir);
+  try {
+    const cwdNow = process.cwd();
+    const result = resolveConfigPath('./foo/bar.json');
+    // Expected: path.resolve(cwd, './foo/bar.json') = cwd + '/foo/bar.json'
+    const expected = path.resolve(cwdNow, 'foo/bar.json');
+    assert.equal(result, expected, `expected normalized path, got ${result}`);
+    assert.ok(!result.includes('/./'), `result must not contain /./ segment, got ${result}`);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test('resolveConfigPath 相对路径含 ../ 被 normalize', () => {
+  const previousCwd = process.cwd();
+  const dir = path.dirname(previousCwd);
+  process.chdir(dir);
+  try {
+    const cwdNow = process.cwd();
+    const result = resolveConfigPath('./foo/../bar.json');
+    // `foo/..` should collapse, leaving `bar.json` resolved under cwd.
+    const expected = path.resolve(cwdNow, 'bar.json');
+    assert.equal(result, expected, `expected normalized path, got ${result}`);
+    assert.ok(!result.includes('..'), `result must not contain '..', got ${result}`);
+  } finally {
+    process.chdir(previousCwd);
+  }
+});
+
+test('resolveConfigPath 绝对路径含 ./ 也被 normalize', () => {
+  // For absolute input we control the input directly so we can compute expected.
+  const dir = path.resolve('/foo/bar');
+  const input = `${dir}/./baz/../cfg.json`;
+  const result = resolveConfigPath(input);
+  const expected = path.normalize(`${dir}/cfg.json`);
+  assert.equal(result, expected, `expected normalized absolute path, got ${result}`);
+  assert.ok(!result.includes('/.'), `result must not contain '/.', got ${result}`);
+  assert.ok(!result.includes('..'), `result must not contain '..', got ${result}`);
 });

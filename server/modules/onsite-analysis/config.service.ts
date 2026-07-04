@@ -69,8 +69,24 @@ const SCHEMA_RELATIVE_PATH = 'config/json-schemas/customer-analysis.schema.json'
 let cachedPayload: ConfigPayload | null = null;
 let cachedValidator: ValidateFunction | null = null;
 
-function resolveConfigPath(input: string): string {
-  return path.isAbsolute(input) ? input : path.resolve(process.cwd(), input);
+function resolveConfigPathImpl(input: string): string {
+  const resolved = path.isAbsolute(input) ? input : path.resolve(process.cwd(), input);
+  // path.normalize collapses './' and 'foo/../' segments so callers get a
+  // canonical form regardless of how the path was written. mtime cache and
+  // watchConfig both compare strings, so consistent normalization prevents
+  // subtle "different absolute string, same file" mismatches downstream.
+  return path.normalize(resolved);
+}
+
+/**
+ * Resolve + normalize a config file path. Exported (test-only utility)
+ * so callers don't depend on the unexported `resolveConfigPathImpl`. The
+ * double normalize is intentional: `path.resolve` joins segments without
+ * collapsing `.` / `..`, while `path.normalize` collapses but doesn't
+ * resolve relative inputs against cwd.
+ */
+export function resolveConfigPath(input: string): string {
+  return resolveConfigPathImpl(input);
 }
 
 function loadValidator(): ValidateFunction {
@@ -103,7 +119,7 @@ function formatAjvErrors(errors: ErrorObject[]): string {
 }
 
 export async function loadConfig(filePath: string): Promise<ConfigPayload> {
-  const resolved = resolveConfigPath(filePath);
+  const resolved = resolveConfigPathImpl(filePath);
 
   let raw: string;
   try {
