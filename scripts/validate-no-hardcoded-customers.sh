@@ -50,7 +50,12 @@ Usage: $PROG_NAME
 白名单(命中后会被过滤掉):
   - config/customer-analysis.json(本就是真相源)
   - config/json-schemas/*
-  - test|spec|fixture|README|CLAUDE|*.md 文件
+  - test/spec/fixture 目录(/__tests__/、/tests/、/spec/、/fixtures/)
+  - *.test.* / *.spec.* 文件
+  - README.md / CLAUDE.md 文件
+  - locales/ 国际化文案目录
+  - 注意:不再用裸 substring `test`,所以 `src/.../test-violation.tsx`
+    这种故意命名的违规文件会正常触发 exit 1。
 EOF
 }
 
@@ -77,8 +82,14 @@ fi
 
 # --- 扫的目录列表 ---
 SCAN_DIRS=(src server design-prototypes/onsite-analysis)
-# 白名单关键词:出现这些关键词的文件视为合法
-EXCLUDE_KEYWORDS_REGEX='(test|spec|fixture|README|CLAUDE|\.md|/config/customer-analysis\.json|/config/json-schemas/|locales/)'
+# 白名单:基于路径段 / 文件名边界匹配,而不是裸 substring。
+# - 排除真正的 test/spec/fixture 目录(/__tests__/、/tests/、/spec/、/fixtures/)、
+#   *.test.* / *.spec.* 文件、README.md / CLAUDE.md 文件
+# - 排除配置/数据真相源(/config/customer-analysis.json、/config/json-schemas/、locales/)
+# 关键:不再用 substring `test`,所以 `src/.../test-violation.tsx` 这种
+# 故意命名的违规文件不能再 bypass。
+EXCLUDE_PATH_REGEX='(/(node_modules|dist|__tests__|tests|spec|fixtures?)/|\.(test|spec)\.|/config/customer-analysis\.json|/config/json-schemas/|/locales/)'
+EXCLUDE_FILE_REGEX='(README\.md|CLAUDE\.md)$'
 # 注释行过滤:源码注释里允许出现字面量(如 doc 注释里举例 "山西公安"),
 # 真正的硬编码必须出现在实际执行的代码行。
 # 规则:含 "//" "* " "/*" "#" 开头或位置在行首的行视为注释,过滤掉。
@@ -105,9 +116,9 @@ scan_hint() {
   local dir="$1"
   local hits
   hits="$(grep -rnE "$HINT_PATTERNS" "$dir" 2>/dev/null \
-    | grep -vE "$EXCLUDE_KEYWORDS_REGEX" \
-    | grep -vE "$COMMENT_LINE_REGEX" \
-    | grep -vE '(node_modules|/dist/)' || true)"
+    | grep -vE "$EXCLUDE_PATH_REGEX" \
+    | grep -vE "$EXCLUDE_FILE_REGEX" \
+    | grep -vE "$COMMENT_LINE_REGEX" || true)"
   if [[ -n "$hits" ]]; then
     log_err "硬编码提示短语命中 ($dir):"
     echo "$hits" | sed 's/^/  /'
@@ -123,9 +134,9 @@ scan_literal() {
   # 防止 literal 中的 '-' 被 grep 当 flag)。用 -- 分隔。
   local hits
   hits="$(grep -rnF -- "$literal" "$dir" 2>/dev/null \
-    | grep -vE "$EXCLUDE_KEYWORDS_REGEX" \
-    | grep -vE "$COMMENT_LINE_REGEX" \
-    | grep -vE '(node_modules|/dist/)' || true)"
+    | grep -vE "$EXCLUDE_PATH_REGEX" \
+    | grep -vE "$EXCLUDE_FILE_REGEX" \
+    | grep -vE "$COMMENT_LINE_REGEX" || true)"
   if [[ -n "$hits" ]]; then
     log_warn "字面量 '$literal' 出现在 $dir:"
     echo "$hits" | sed 's/^/  /'
