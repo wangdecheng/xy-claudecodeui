@@ -57,8 +57,15 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
   const previousDb = process.env.DATABASE_PATH;
   const previousRoot = process.env.ONSITE_ROOT;
   const tempDir = await mkdtemp(path.join(tmpdir(), 'upload-route-'));
-  process.env.DATABASE_PATH = path.join(tempDir, 'auth.db');
-  process.env.ONSITE_ROOT = path.join(tempDir, 'onsite');
+  const databasePath = path.join(tempDir, 'auth.db');
+  // Per-test isolated database file (avoids cross-test contamination).
+  process.env.DATABASE_PATH = databasePath;
+  // But ONSITE_ROOT is intentionally process-global — shared across the
+  // entire test run. We instead create a per-test problem cwd under a
+  // unique problem id so tests can write in parallel without colliding.
+  if (!previousRoot) {
+    process.env.ONSITE_ROOT = path.join(tempDir, 'onsite');
+  }
   await mkdir(process.env.ONSITE_ROOT!, { recursive: true });
   closeConnection();
   initSchemaWithMigrations();
@@ -70,7 +77,6 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
     if (previousDb === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDb;
     if (previousRoot === undefined) delete process.env.ONSITE_ROOT;
-    else process.env.ONSITE_ROOT = previousRoot;
     await rm(tempDir, { recursive: true, force: true });
   }
 }
@@ -166,7 +172,7 @@ async function callRoute(
 
 test('POST /api/onsite/problems/:id/files with 3 zip → 207 + 3 rows in onsite_files + 3 unpacked-N dirs', async () => {
   await withIsolatedEnv(async () => {
-    const problemId = '20260704-test-upload';
+    const problemId = `20260704-test-upload-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const cwd = process.env.ONSITE_ROOT! + '/' + problemId;
     await mkdir(cwd, { recursive: true });
     seedProblem(problemId, cwd);
@@ -211,7 +217,7 @@ test('POST /api/onsite/problems/:id/files with 3 zip → 207 + 3 rows in onsite_
 
 test('POST with corrupted zip → 207,2 rows in DB, unpacked-3 missing', async () => {
   await withIsolatedEnv(async () => {
-    const problemId = '20260704-test-corrupt';
+    const problemId = `20260704-test-corrupt-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const cwd = process.env.ONSITE_ROOT! + '/' + problemId;
     await mkdir(cwd, { recursive: true });
     seedProblem(problemId, cwd);
@@ -268,7 +274,7 @@ test('POST with unknown problem id → 404', async () => {
 
 test('POST with no files → 400', async () => {
   await withIsolatedEnv(async () => {
-    const problemId = '20260704-test-nofiles';
+    const problemId = `20260704-test-nofiles-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const cwd = process.env.ONSITE_ROOT! + '/' + problemId;
     await mkdir(cwd, { recursive: true });
     seedProblem(problemId, cwd);
@@ -283,7 +289,7 @@ test('POST with no files → 400', async () => {
 
 test('GET /api/onsite/problems/:id/files → 200 + file 数组', async () => {
   await withIsolatedEnv(async () => {
-    const problemId = '20260704-test-list';
+    const problemId = `20260704-test-list-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const cwd = process.env.ONSITE_ROOT! + '/' + problemId;
     await mkdir(cwd, { recursive: true });
     seedProblem(problemId, cwd);
