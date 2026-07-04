@@ -78,14 +78,17 @@ test('GET /api/onsite/config sets Cache-Control: no-store header', async () => {
   assert.match(response.headers['cache-control'] || '', /no-store/);
 });
 
-test('GET /api/onsite/config returns 503/500 when config not loaded', async () => {
+test('GET /api/onsite/config returns 503 when config not loaded', async () => {
   resetConfig();
   const app = buildApp();
 
   const response = await request(app).get('/api/onsite/config');
 
-  // Accept either 500 or a custom 503 — implementation choice. Must NOT be 200.
-  assert.ok(response.status >= 500 && response.status < 600, `expected 5xx, got ${response.status}`);
+  // Contract: this route returns 503 specifically when ConfigService hasn't
+  // been bootstrapped. Tightened from 5xx-range to === 503 (I-5 fix) so
+  // that a future regression to 500 / 502 / 504 fails the test loudly
+  // instead of slipping through the loose range check.
+  assert.equal(response.status, 503, `expected 503, got ${response.status}`);
   assert.ok(response.body.error || response.body.message);
 });
 
