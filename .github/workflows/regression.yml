@@ -100,6 +100,22 @@ jobs:
             exit $REG_EXIT
           fi
 
+      # --- 步骤 1.5 (Batch 8 Phase 1):客户/迭代字面量静态扫描 ---
+      # 必须先装 jq(ubuntu-latest 自带,无需显式 apt 装)。
+      - name: Validate no hardcoded customers
+        id: no-hardcoded
+        shell: bash
+        run: |
+          set +e
+          ./scripts/validate-no-hardcoded-customers.sh
+          NHC_EXIT=$?
+          set -e
+          echo "no_hardcoded_exit=$NHC_EXIT" >> "$GITHUB_OUTPUT"
+          if [[ $NHC_EXIT -ne 0 ]]; then
+            echo "::error::硬编码客户/迭代字面量命中 — 走 config/customer-analysis.json 驱动,不要手写。"
+            exit $NHC_EXIT
+          fi
+
       # --- 步骤 3:上传 baseline 作为 PR artifact ---
       - name: Upload baseline artifact
         if: always()
@@ -122,6 +138,7 @@ jobs:
             echo ""
             echo "- diff-clean: ${{ steps.diff.outputs.diff_clean }}"
             echo "- regression: ${{ steps.regression.outputs.regression_exit }}"
+            echo "- no-hardcoded-customers: ${{ steps.no-hardcoded.outputs.no_hardcoded_exit }}"
             echo ""
             echo "### baseline"
             echo '```'
