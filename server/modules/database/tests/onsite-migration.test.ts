@@ -131,9 +131,9 @@ test('onsite 表关键索引存在', async () => {
 // SHA-tracked migration steps. This test pins that contract so future contributors
 // don't quietly re-introduce the placeholder.
 
-test('ONSITE_MIGRATION_STEPS 长度 === 4(已删除 ALTER-sessions placeholder step)', async () => {
+test('ONSITE_MIGRATION_STEPS 长度 === 5(Batch 5 加了 006_add_root_cause_text)', async () => {
   const { ONSITE_MIGRATION_STEPS } = await import('@/modules/database/migrations.js');
-  assert.equal(ONSITE_MIGRATION_STEPS.length, 4);
+  assert.equal(ONSITE_MIGRATION_STEPS.length, 5);
 });
 
 test('ONSITE_MIGRATION_STEPS 第一项不再是 001_add_sessions_kind_and_onsite_columns', async () => {

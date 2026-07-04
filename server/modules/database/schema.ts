@@ -141,7 +141,8 @@ CREATE TABLE IF NOT EXISTS onsite_problems (
     problem_json_path TEXT,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    mtime TEXT
+    mtime TEXT,
+    root_cause_text TEXT
 );
 `;
 

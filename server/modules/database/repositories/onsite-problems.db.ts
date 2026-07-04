@@ -23,11 +23,12 @@ export type OnsiteProblemRecord = {
   created_at: string;
   updated_at: string;
   mtime: string | null;
+  root_cause_text: string | null;
 };
 
 export type OnsiteProblemListItem = OnsiteProblemRecord;
 
-type ProblemInsertInput = Omit<OnsiteProblemRecord, 'created_at' | 'updated_at' | 'mtime'>;
+type ProblemInsertInput = Omit<OnsiteProblemRecord, 'created_at' | 'updated_at' | 'mtime' | 'root_cause_text'>;
 
 const INSERT_SQL = `
 INSERT INTO onsite_problems (
@@ -39,7 +40,7 @@ INSERT INTO onsite_problems (
 
 const SELECT_COLUMNS = `
 id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path,
-created_at, updated_at, mtime
+created_at, updated_at, mtime, root_cause_text
 `;
 
 export const onsiteProblemsDb = {
@@ -111,21 +112,16 @@ export const onsiteProblemsDb = {
   },
 
   /**
-   * Batch 4.3 — 写入根因结论字段(供 confirm-root-cause 端点使用)。
-   * 注:实际字段列在 Batch 5/6 才会正式加进 schema,这里先做 best-effort:
-   * 如果 root_cause_text 列不存在,降级到 problem_json_path 上的 problem.json。
+   * Batch 5 (Sub-task E) cleanup — 写入 root_cause_text 列(不再写
+   * problem.json 文件)。Idempotent:重复写入同一 id 覆盖之前的值。
+   * 若 id 不存在,no-op(返回 changes=0,不抛)。
    */
   updateRootCause(id: string, rootCauseText: string): void {
-    const row = this.findById(id);
-    if (!row || !row.problem_json_path) return;
-    try {
-      const fs = require('node:fs') as typeof import('node:fs');
-      const raw = fs.readFileSync(row.problem_json_path, 'utf8');
-      const json = JSON.parse(raw) as Record<string, unknown>;
-      json.root_cause_text = rootCauseText;
-      fs.writeFileSync(row.problem_json_path, JSON.stringify(json, null, 2), 'utf8');
-    } catch {
-      // best-effort,失败不抛
-    }
+    const db = getConnection();
+    db.prepare(
+      `UPDATE onsite_problems
+       SET root_cause_text = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?`,
+    ).run(rootCauseText, id);
   },
 };

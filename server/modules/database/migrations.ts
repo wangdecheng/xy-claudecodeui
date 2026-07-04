@@ -502,6 +502,12 @@ export const runMigrations = (db: Database) => {
     db.exec(ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL);
     db.exec(ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL);
 
+    // Batch 5 (Sub-task E) cleanup — add root_cause_text to existing
+    // onsite_problems tables (those created before this column existed).
+    // Idempotent: PRAGMA table_info skip when already present.
+    const onsiteProblemsColumns = getTableInfo(db, 'onsite_problems').map((c) => c.name);
+    addColumnToTableIfNotExists(db, 'onsite_problems', onsiteProblemsColumns, 'root_cause_text', 'TEXT');
+
     // Onsite indexes (kept in migrations so we don't depend on INIT_SCHEMA_SQL
     // having run for an upgraded database that pre-dates these tables).
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd)');
@@ -727,6 +733,14 @@ export const ONSITE_MIGRATION_STEPS: MigrationStep[] = [
   {
     name: '005_create_onsite_discipline_log_table',
     sql: ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL,
+    sha: '',
+  },
+  {
+    // Batch 5 (Sub-task E) cleanup: replace the Batch 4 best-effort
+    // problem.json file-write hack with a real column. SHA-tracked because
+    // the body is a fixed string (no PRAGMA introspection needed).
+    name: '006_add_root_cause_text',
+    sql: 'ALTER TABLE onsite_problems ADD COLUMN root_cause_text TEXT',
     sha: '',
   },
 ];
