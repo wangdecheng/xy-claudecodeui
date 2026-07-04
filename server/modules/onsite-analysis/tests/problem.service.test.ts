@@ -60,18 +60,30 @@ test('sanitizeCustomerLabel 把 /\\:*?"<>| 替换为 _', () => {
   assert.equal(sanitizeCustomerLabel('safe-name_中文'), 'safe-name_中文');
 });
 
+/**
+ * Compute today's YYYYMMDD in local time so tests don't break when the
+ * calendar date rolls. Implementation derives the directory prefix from
+ * `new Date()` (see problem.service.ts:formatYyyymmdd); tests must mirror
+ * that, otherwise the assertion drifts one day later every 24 hours.
+ */
+function todayYyyymmdd(): string {
+  const d = new Date();
+  return `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
+}
+
 test('create 写入 YYYYMMDD-客户 目录 + problem.json', async () => {
   await withIsolatedEnv(async () => {
+    const yyyymmdd = todayYyyymmdd();
     const record = await problemService.create({
       customer: '山西公安',
       third_bridge_branch: 'master_5.2_3.2',
       iteration: 'master_5.2_3.2',
       database: 'db01',
-      cwd: process.env.ONSITE_ROOT + '/20260703-山西公安',
+      cwd: process.env.ONSITE_ROOT + `/${yyyymmdd}-山西公安`,
     });
-    assert.ok(record.id.startsWith('20260703-山西公安'));
+    assert.ok(record.id.startsWith(`${yyyymmdd}-山西公安`));
 
-    const dirPath = path.join(process.env.ONSITE_ROOT!, '20260703-山西公安');
+    const dirPath = path.join(process.env.ONSITE_ROOT!, `${yyyymmdd}-山西公安`);
     const jsonPath = path.join(dirPath, 'problem.json');
     const json = JSON.parse(await (await import('node:fs/promises')).readFile(jsonPath, 'utf8'));
     assert.equal(json.customer, '山西公安');
@@ -82,7 +94,8 @@ test('create 写入 YYYYMMDD-客户 目录 + problem.json', async () => {
 
 test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirName dedup 路径)', async () => {
   await withIsolatedEnv(async () => {
-    const cwd = process.env.ONSITE_ROOT + '/20260703-山西公安';
+    const yyyymmdd = todayYyyymmdd();
+    const cwd = process.env.ONSITE_ROOT + `/${yyyymmdd}-山西公安`;
 
     // 第一次创建:目录名应当是 base(没有 _2 后缀),即
     // `nextAvailableDirName` 返回的就是 baseDirName。
@@ -95,10 +108,10 @@ test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirNa
     });
     assert.equal(
       first.id,
-      '20260703-山西公安',
+      `${yyyymmdd}-山西公安`,
       '首次创建应原样使用 base 目录名,不走 dedup 分支',
     );
-    assert.equal(first.cwd, path.join(process.env.ONSITE_ROOT!, '20260703-山西公安'));
+    assert.equal(first.cwd, path.join(process.env.ONSITE_ROOT!, `${yyyymmdd}-山西公安`));
 
     // 第二次创建:故意传同样的 cwd(而不是预先加 _2 后缀),让
     // `nextAvailableDirName` 真正命中 dedup 循环,以确保该分支被
@@ -113,12 +126,12 @@ test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirNa
     });
     assert.equal(
       second.id,
-      '20260703-山西公安_2',
+      `${yyyymmdd}-山西公安_2`,
       '第二次创建应触发 dedup,_2 后缀由 nextAvailableDirName 分配',
     );
     assert.equal(
       second.cwd,
-      path.join(process.env.ONSITE_ROOT!, '20260703-山西公安_2'),
+      path.join(process.env.ONSITE_ROOT!, `${yyyymmdd}-山西公安_2`),
       'dedup 后 record.cwd 也应指向新的 _2 目录,而不是 caller 传过来的 cwd',
     );
 
@@ -128,7 +141,7 @@ test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirNa
     const ids = listed.map((item) => item.id).sort();
     assert.deepEqual(
       ids,
-      ['20260703-山西公安', '20260703-山西公安_2'],
+      [`${yyyymmdd}-山西公安`, `${yyyymmdd}-山西公安_2`],
       'list 应同时返回首次和 dedup 后的两条记录',
     );
   });
