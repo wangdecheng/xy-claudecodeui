@@ -157,15 +157,17 @@ set -e
 END_MS="$(now_ms)"
 ELAPSED_MS=$((END_MS - START_MS))
 
-# 解析最后的汇总行(取最后一次出现,避免被 individual test 文件的同名行干扰)
-# node --test TAP 输出的最后形如:
-#   ℹ tests 79
-#   ℹ pass 78
-#   ℹ fail 1
-# 我们使用 awk:把每一列数字取 max。
-PASS_COUNT="$(grep -E '^ℹ +(tests|pass)' "$TMP_OUT" | awk '/pass/ { gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
-TESTS_COUNT="$(grep -E '^ℹ +tests' "$TMP_OUT" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
-FAIL_COUNT="$(grep -E '^ℹ +fail' "$TMP_OUT" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
+# 解析全局汇总行(取最后一次出现,避免被 individual test 文件的同名行干扰)
+# node --test TAP 输出对每个 test 文件都打印一遍:
+#   ℹ tests N
+#   ℹ pass N
+#   ℹ fail N
+# 然后在最末尾打印一份全局汇总(同样是 `ℹ pass N` 等行)。
+# 先前的 awk 实现 `END { print sum+0 }` 把所有行相加,多文件时会双倍计数。
+# 改为 `tail -n1`:只取最后一次出现的全局汇总。
+PASS_COUNT="$(grep -E '^ℹ +pass' "$TMP_OUT" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')"
+TESTS_COUNT="$(grep -E '^ℹ +tests' "$TMP_OUT" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')"
+FAIL_COUNT="$(grep -E '^ℹ +fail' "$TMP_OUT" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')"
 
 # 兜底:若断言失败,我们认为运行整个失败
 if [[ $TEST_EXIT -ne 0 ]]; then

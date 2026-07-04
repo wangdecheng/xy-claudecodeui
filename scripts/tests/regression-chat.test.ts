@@ -111,3 +111,105 @@ test('--dry-run 在 baseline 文件已存在时直接 cat 且不修改它', () =
     }
   }
 });
+
+// ---------------------------------------------------------------------------
+// I-1 fix: parse the LAST occurrence of each metric, not the SUM
+// ---------------------------------------------------------------------------
+//
+// node --test TAP outputs BOTH a per-file summary AND a global summary.
+// Both look like `ℹ pass N` / `ℹ fail N` / `ℹ tests N`. The previous awk
+// implementation summed across all lines, which double-counts when more
+// than one test file is run. This test verifies the parsing logic in the
+// actual regression-chat.sh script against a controlled TMP_OUT input.
+
+test('regression-chat.sh 解析多文件 TAP 输出:取最后一行而非求和', () => {
+  // 构造一个 fixture:多文件 + 全局汇总,故意让 last value 与 SUM 不同
+  // 三个 pass lines: 5, 3, 11(sums to 19, last is 11)
+  // 三个 fail lines: 0, 0, 2(sums to 2 — coincide here)
+  // 三个 tests lines: 5, 3, 13(sums to 21, last is 13)
+  // Use the last row only — global total is pass=11 fail=2 tests=13.
+  // sum-bug would produce pass=19 fail=2 tests=21.
+  const TMP_OUT = path.join(REPO_ROOT, 'scripts', 'tests', 'fixture-tap-output.txt');
+  const content = [
+    'TAP version 13',
+    'ok 1 - first test',
+    'ℹ tests 5',
+    'ℹ pass 5',
+    'ℹ fail 0',
+    'ok 2 - second suite header',
+    'ℹ tests 3',
+    'ℹ pass 3',
+    'ℹ fail 0',
+    'ℹ tests 13',
+    'ℹ pass 11',
+    'ℹ fail 2',
+  ].join('\n');
+  writeFileSync(TMP_OUT, content);
+
+  try {
+    // 用脚本本身使用的解析逻辑(grep + awk),证明 last-value vs sum 的差异
+    const probeResult = spawnSync(
+      'bash',
+      [
+        '-c',
+        [
+          // Script's NEW parsing (last-value)
+          `NEW_PASS=$(grep -E '^ℹ +pass' "${TMP_OUT}" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')`,
+          `NEW_TESTS=$(grep -E '^ℹ +tests' "${TMP_OUT}" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')`,
+          `NEW_FAIL=$(grep -E '^ℹ +fail' "${TMP_OUT}" | tail -n1 | awk '{ gsub(/[^0-9]/, "", $NF); print $NF+0 }')`,
+          `echo "NEW:PASS=$NEW_PASS FAIL=$NEW_FAIL TESTS=$NEW_TESTS"`,
+          // Script's OLD parsing (sum) for comparison
+          `OLD_PASS=$(grep -E '^ℹ +(tests|pass)' "${TMP_OUT}" | awk '/pass/ { gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')`,
+          `OLD_TESTS=$(grep -E '^ℹ +tests' "${TMP_OUT}" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')`,
+          `OLD_FAIL=$(grep -E '^ℹ +fail' "${TMP_OUT}" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')`,
+          `echo "OLD:PASS=$OLD_PASS FAIL=$OLD_FAIL TESTS=$OLD_TESTS"`,
+        ].join('\n'),
+      ],
+      { encoding: 'utf8' },
+    );
+    assert.equal(
+      probeResult.status,
+      0,
+      `probe failed: ${probeResult.stderr} ${probeResult.stdout}`,
+    );
+    const out = probeResult.stdout;
+    // Confirm fixture separates the two: OLD sum != NEW last
+    assert.match(out, /OLD:PASS=19/, 'sum-bug should yield 19 (5+3+11)');
+    // Pass / fail / tests appear on the same line as `OLD:` because we used
+    // a single echo line — assert presence of both the values themselves.
+    assert.match(out, /\bTESTS=21\b/, 'sum-bug should yield 21 (5+3+13)');
+    assert.match(out, /\bPASS=11\b/, 'last-value should yield 11');
+    assert.match(out, /\bTESTS=13\b/, 'last-value should yield 13');
+
+    // Now verify the *actual script* uses the last-value approach: re-extract
+    // the parsing lines from regression-chat.sh and assert they all use
+    // tail -n1 (not just `awk '{ sum += ... } END { print sum }`).
+    const scriptText = readFileSync(SCRIPT, 'utf8');
+    // Negative assertion: no remaining `sum += $NF ... END { print sum+0 }`
+    // style parsing for ANY of the three metrics (pass / fail / tests).
+    const sumOnlyLines = scriptText.match(/_COUNT="\$\(grep[^\n]*awk[^\n]*\{[^\n]*sum \+=[^)]*\)/g) ?? [];
+    assert.equal(
+      sumOnlyLines.length,
+      0,
+      `regression-chat.sh still uses sum-of-awk parsing: ${sumOnlyLines.join('\n')}`,
+    );
+    // Positive assertion: each *_COUNT line uses `tail -n1 | awk ...` for last-value
+    // We expect exactly 3 occurrences (PASS / FAIL / TESTS).
+    const tailLines = scriptText
+      .split('\n')
+      .filter((line) => line.includes('_COUNT="$(grep'))
+      .filter((line) => line.includes('| tail -n1 | awk'));
+    assert.equal(
+      tailLines.length,
+      3,
+      `regression-chat.sh should use tail -n1 last-value parsing for ALL three metrics. got ${tailLines.length} of 3.\n` +
+        `tail-n1 lines:\n${tailLines.join('\n')}`,
+    );
+  } finally {
+    try {
+      require('node:fs').unlinkSync(TMP_OUT);
+    } catch {
+      // ignore
+    }
+  }
+});
