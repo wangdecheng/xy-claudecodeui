@@ -70,6 +70,8 @@ import { browserUseService } from './modules/browser-use/browser-use.service.js'
 import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
 import { initializeDatabase, projectsDb, sessionsDb, handleMigrationCorruption } from './modules/database/index.js';
 import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
+import { onsiteBroadcast } from './modules/onsite-analysis/onsite-broadcast.js';
+import { onWatcherChange, startOnsiteWatcher, stopOnsiteWatcher } from './modules/onsite-analysis/onsiteWatcher.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -1784,6 +1786,14 @@ async function startServer() {
                 console.warn(`${c.warn('[WARN]')} Failed to bootstrap onsite config:`, error?.message || error);
             }
 
+            // Start onsite analysis watcher + wire to in-process broadcast channel.
+            // Every chokidar event becomes a `problems:changed` notification that
+            // WebSocket subscribers receive via onsiteBroadcast.
+            startOnsiteWatcher();
+            onWatcherChange(() => {
+                onsiteBroadcast.broadcast({ type: 'problems:changed' });
+            });
+
             // Start server-side plugin processes for enabled plugins
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
@@ -1791,6 +1801,7 @@ async function startServer() {
         });
 
         await closeSessionsWatcher();
+        stopOnsiteWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
             try {
