@@ -24,11 +24,13 @@ import { onsiteBroadcast } from '../onsite-broadcast.js';
 
 const MAIN_SIGNAL_REGEX = /(未找到|0\s*结果|no matches|found nothing|无命中|没有结果|no results?)/i;
 const GREP_FAMILY_CMD_REGEX = /^\s*(grep|rg|ag|ack)\b/;
+const SUSPECT_CMD_REGEX = /^\s*(cat|head|tail|wc|xxd|find|python3?|node)\b/;
+const EMPTY_STDOUT_REGEX = /^\s*$/;
 
 const GREP_RECENT_WINDOW_MS = 60_000;
 const STDOUT_PREVIEW_LIMIT = 200;
 
-type DisciplineKind = 'trace_id_empty';
+type DisciplineKind = 'trace_id_empty' | 'trace_id_suspect';
 
 export type TraceIdLogEntry = {
   problemId: string;
@@ -189,6 +191,32 @@ export const disciplineTraceIdMiddleware = {
 
           if (traceId && cmd.includes(traceId)) {
             state.lastGrepAt.set(traceId, Date.now());
+          }
+        } else if (cmd && SUSPECT_CMD_REGEX.test(cmd)) {
+          // 弱信号 (suspect, 4.4.b) — 非 grep 家族 + 空 stdout
+          const stdout = extractStdout(envelope);
+          if (EMPTY_STDOUT_REGEX.test(stdout)) {
+            try {
+              ctx.logHit({
+                problemId: problemId ?? 'unknown',
+                ...(messageId !== undefined ? { messageId } : {}),
+                kind: 'trace_id_suspect',
+                word: null,
+                position: null,
+                cmd,
+                stdout_preview: stdout.slice(0, STDOUT_PREVIEW_LIMIT),
+              });
+            } catch { /* ignore */ }
+
+            try {
+              onsiteBroadcast.broadcast({ type: 'discipline:trace-id-suspect' });
+            } catch { /* ignore */ }
+
+            const flagged = withDisciplineFlag(envelope, {
+              traceIdSuspect: true,
+              cmd,
+            });
+            return originalSend(JSON.stringify(flagged) as never, ...(args as []));
           }
         }
         return originalSend(data as never, ...(args as []));
