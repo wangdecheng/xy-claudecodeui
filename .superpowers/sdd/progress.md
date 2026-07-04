@@ -30,6 +30,12 @@
 | Task 3.2 | complete(review approved) | 53651da | `onsite.routes.ts` 5 端点(GET list / POST / GET :id / PATCH / GET :id/files)+ 14 个测试 |
 | Task 3.3 | complete(review approved) | a06c08e | `server/modules/onsite-analysis/onsite-broadcast.ts` + 10 个测试(subscribe/unsubscribe/broadcast/per-subscriber try-catch/watcher 集成) |
 | Task 3.fix.1 | complete(review approved) | 5b27acf | **Review followup**: `state-machine.test.ts` atomicity 测试改 monkey-patch `onsiteStateAuditDb.append` 真注入事务中途失败,证明 ROLLBACK 同时撤销 status + audit |
+| Task 4.1 | complete(review approved) | 264e645 | `OnsiteWebSocketService` + `chat-run-registry.kind` 字段 + 6 个测试(hello frame 验证 + kind routing) |
+| Task 4.2 | complete(review approved) | d289b63 | `discipline-softening.middleware.ts` + 8 个测试(findWords / containsSoftening / replaceForUi / attachToWs / 词库 lazy load / chat 路径隔离) |
+| Task 4.3 | complete(review approved) | c311e2c | `POST /api/onsite/problems/:id/confirm-root-cause` + 4 个测试(422 软化词拦截 + 400 reason + 200 broadcast) |
+| Task 4.4.a | complete(review approved) | 82a4fe3 | `discipline-trace-id.middleware.ts` 主信号 + 强信号 + 13 个测试(60s grep 反误报 + grep 家族 0 命中 + applyBlocked 端到端) |
+| Task 4.4.b | complete(review approved) | b04bcee | 同文件加 suspect 信号(cat/find/python/head/tail/wc 空文件) + 6 个测试(不调 applyBlocked) |
+| Task 4.5 | complete(review approved) | 32ace22 | `discipline-write-protection.middleware.ts` 双正则(写动作 + 原日志路径)+ 11 个测试(命中 + 不命中 + 软审计 + chat 路径隔离) |
 
 ## Review Verdict — Batch 2
 
@@ -92,11 +98,33 @@
 - **Workflow**: `full`
 - **Mode**: `SDD`
 - **Contract**: 已批准(2026-07-03)
-- **Batches Completed**: 4 / 9(Batch 0~3;Batch 4~8 + 5.5 待跑)
-- **当前 commit**: `5b27acf`(Batch 3 + atomicity fix 完结)
+- **Batches Completed**: 5 / 9(Batch 0~4;Batch 5~8 + 5.5 待跑)
+- **当前 commit**: `32ace22`(Batch 4 完结)
 - **Pre-existing failure**:
   - `provider-models.service.test.ts`(main 上 fail,与 chat 路径无关)
   - `config.service.watch.test.ts:53` mtime 测试 flaky(macOS 1ms mtime 解析)
+
+## Review Verdict — Batch 4
+
+- **Verdict**: ✅ Approved(代码层),但 2 个 wiring 必备项必须在 Batch 5 brief 显式列出
+- **Critical**: 0
+- **Important**: 2(均为 Batch 5 wiring preconditions,非本 batch 缺陷)
+- **Minor**: 7(均记 follow-up)
+
+### Important 处置
+
+1. **(Batch 5 必做)OnsiteWebSocketService.attach(wss) 未接线**:`server/index.js:113` 调 `createWebSocketServer` 但未挂 `onsiteWebSocketService.attach(wss)`;`websocket-server.service.ts:57-78` 路由表无 `/onsite/ws` 分支。tasks.md:717-725(Task 5.2) 已规划 Batch 5 处理,brief 需显式列出。
+2. **(Batch 5 必做)Middleware 仅挂载 `attachToWs` 接口,未接到 `chat-websocket.service.ts` 的 tool_result 出口**:`tool_result` envelope 在 production 由 `chat-run-registry` → `ChatSessionWriter.send()` 推送,Batch 5 需在 writer 出站路径挂 middlewares,suspect + main 信号才能见真 envelope。brief 需显式列出。
+
+### Minor 处置(全部记 follow-up)
+
+- `discipline-softening.middleware.ts:21` `kind: 'softening'` 单字面量联合 — 后续 hedge 等类目需扩展
+- `discipline-trace-id.middleware.ts:97-102` `buildAutoReason` 含 `见 CLAUDE.md 第 N 章` 字面量占位 — 接真章节引用
+- `discipline-write-protection.middleware.ts:23` `WRITE_ACTION_REGEX` 用 `>(?!>)` 排除追加重定向 — 加 JSDoc
+- `onsite.routes.ts:307-313` `updateRootCause` 失败 console.warn 但测试未覆盖此分支 — Batch 5 加真列
+- `onsite-problems.db.ts:113-130` `updateRootCause` 用 `require('node:fs')` 内联 — Batch 5 加 `root_cause_text` 列去掉此 hack
+- `onsite-websocket.service.ts:201-205` `detach()` 是 no-op — 后续真做生产 teardown 时实现 listener tracker
+- 测试用 `_setWordsForTests` / `_resetForTests` — 略 leak,考虑聚合 `resetForTests`
 
 ## Review 节点
 
@@ -104,7 +132,7 @@
 - [x] Batch 1 收尾 → 进 Batch 2
 - [x] Batch 2 收尾 → 进 Batch 3(检查点复审修复完成)
 - [x] Batch 3 收尾 → 进 Batch 4(纪律护栏核心)
-- [ ] Batch 4 收尾 → 进 Batch 5
+- [x] Batch 4 收尾 → 进 Batch 5(wiring 必备项已列出)
 - [ ] Batch 5 收尾 → 进 Batch 5.5(chat 回归门禁)
 - [ ] Batch 5.5 收尾 → 进 Batch 6
 - [ ] Batch 7 收尾 → 进 Batch 8
