@@ -42,9 +42,16 @@ export type OnsiteStreamMessage =
   | { id: string; role: 'assistant'; kind: 'text'; text: string; ts: number; softening?: boolean }
   | { id: string; role: 'tool'; kind: 'tool_use' | 'tool_result'; name?: string; text: string; ts: number };
 
+interface DisciplineLogEntry {
+  ts: number;
+  word: string;
+  kind: 'softening' | 'writeOriginalLog' | 'traceIdSuspect';
+}
+
 interface DisciplineState {
   softening: number;
   writeOriginalLog: number;
+  log: DisciplineLogEntry[];
 }
 
 const ALLOWED_KINDS = new Set(['text', 'tool_use', 'tool_result', 'thinking', 'stream_delta', 'complete']);
@@ -72,7 +79,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const [messages, setMessages] = useState<OnsiteStreamMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
-  const [, setDiscipline] = useState<DisciplineState>({ softening: 0, writeOriginalLog: 0 });
+  const [discipline, setDiscipline] = useState<DisciplineState>({
+    softening: 0,
+    writeOriginalLog: 0,
+    log: [],
+  });
   const scrollRef = useRef<HTMLDivElement | null>(null);
 
   // ─── effects ────────────────────────────────────────────────────────
@@ -88,7 +99,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     }
     // reset stream on problem switch
     setMessages([]);
-    setDiscipline({ softening: 0, writeOriginalLog: 0 });
+    setDiscipline({ softening: 0, writeOriginalLog: 0, log: [] });
     setDraft('');
   }, [problemId, problem, setHelloContext]);
 
@@ -103,13 +114,35 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       // server only allows one hello per WS so the only other sessionId
       // we'd see is the active problem's.
 
-      // Discipline tally (no rendering needed; counters live in their own state).
+      // Discipline tally — single source of truth lives here and flows to
+      // <DisciplineCounter> via props.
       if (ev.discipline && typeof ev.discipline === 'object') {
         const d = ev.discipline as Record<string, unknown>;
-        setDiscipline((cur) => ({
-          softening: cur.softening + (d.softening === true ? 1 : 0),
-          writeOriginalLog: cur.writeOriginalLog + (d.writeOriginalLog === true ? 1 : 0),
-        }));
+        setDiscipline((cur) => {
+          const softening = cur.softening + (d.softening === true ? 1 : 0);
+          const writeOriginalLog = cur.writeOriginalLog + (d.writeOriginalLog === true ? 1 : 0);
+          const ts = Date.now();
+          const append: DisciplineLogEntry[] = [];
+          if (d.softening === true) {
+            append.push({
+              ts,
+              word: typeof d.word === 'string' ? d.word : '',
+              kind: 'softening',
+            });
+          }
+          if (d.writeOriginalLog === true) {
+            append.push({
+              ts,
+              word: typeof d.word === 'string' ? d.word : '',
+              kind: 'writeOriginalLog',
+            });
+          }
+          return {
+            softening,
+            writeOriginalLog,
+            log: [...cur.log, ...append],
+          };
+        });
         // Softening renders inline via card/cardRenderer
         if (d.softening === true && ev.kind === 'text' && ev.role === 'assistant') {
           setMessages((cur) => {
@@ -226,7 +259,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             <span className={cn('h-1.5 w-1.5 rounded-full', isConnected ? 'bg-green-500' : 'bg-gray-400')} />
             {isConnected ? 'connected' : 'offline'}
           </span>
-          <DisciplineCounter problemId={problemId} resetKey={problemId} />
+          <DisciplineCounter
+            softening={discipline.softening}
+            writeOriginalLog={discipline.writeOriginalLog}
+            log={discipline.log}
+          />
         </div>
       </header>
 

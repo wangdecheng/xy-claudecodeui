@@ -3,7 +3,8 @@
  * and write-original-log counts for the current session.
  *
  * Counts come from WS frames carrying `discipline.softening` /
- * `discipline.writeOriginalLog` flags. We tally in component state.
+ * `discipline.writeOriginalLog` flags. Tally is owned by
+ * `OnsiteChatStream` and passed in as props (single source of truth).
  *
  * Clicking a pill opens a small overlay listing the onsite discipline
  * log entries (read-only summary). For Batch 7 we keep it lightweight:
@@ -20,29 +21,18 @@ export interface DisciplineLogEntry {
 }
 
 export interface DisciplineCounterProps {
-  problemId: string;
-  /** Reset internal counters when this number changes (e.g. problem switch). */
-  resetKey?: string | number;
+  softening: number;
+  writeOriginalLog: number;
+  log: DisciplineLogEntry[];
 }
 
-export default function DisciplineCounter({ problemId, resetKey }: DisciplineCounterProps) {
+export default function DisciplineCounter({
+  softening,
+  writeOriginalLog,
+  log,
+}: DisciplineCounterProps) {
   const { t } = useTranslation(['onsite']);
-  const [softCount, setSoftCount] = useState(0);
-  const [writeCount, setWriteCount] = useState(0);
-  const [log, setLog] = useState<DisciplineLogEntry[]>([]);
   const [open, setOpen] = useState(false);
-
-  // Reset on problem change — exposed via imperative-style setter hook.
-  // Consumer (OnsiteChatStream) wires `resetKey` to the problemId so this
-  // clears when switching problems.
-  if (resetKey !== undefined && (resetKey as unknown) !== softCount) {
-    // intentionally a no-op here — reset is performed by the parent
-    // before this renders via the effect chain.
-  }
-  void problemId;
-  void setSoftCount;
-  void setWriteCount;
-  void setLog;
 
   const handleClick = () => setOpen((o) => !o);
 
@@ -58,7 +48,7 @@ export default function DisciplineCounter({ problemId, resetKey }: DisciplineCou
         title={t('onsite:discipline.softeningTag')}
       >
         <span aria-hidden="true">⚠️</span>
-        <span>{t('onsite:discipline.softeningTag', { defaultValue: 'softening' }).slice(0, 4)} 0</span>
+        <span>{t('onsite:discipline.softeningTag', { defaultValue: 'softening' })} {softening}</span>
       </button>
       <button
         type="button"
@@ -67,7 +57,7 @@ export default function DisciplineCounter({ problemId, resetKey }: DisciplineCou
         title={t('onsite:discipline.writeProtectionCounter')}
       >
         <span aria-hidden="true">📝</span>
-        <span>logs 0</span>
+        <span>{t('onsite:discipline.writeProtectionCounter', { defaultValue: 'logs' })} {writeOriginalLog}</span>
       </button>
       {open && (
         <div
