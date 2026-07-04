@@ -200,43 +200,46 @@ test('apply 非法状态迁移抛 InvalidStateTransitionError 且包含 from/all
   });
 });
 
-test('apply 事务原子性:故意抛错时 status 与 audit 行都不变', async () => {
+test('apply 事务原子性:audit append 中途抛错 → status 与 audit 行一起回滚', async () => {
   await withIsolatedEnv(async () => {
-    const id = `${todayYyyymmdd()}-atomic`;
-    seedProblem(id, process.env.ONSITE_ROOT + '/' + id, 'pending_info');
+    const id = `${todayYyyymmdd()}-atomic-rollback`;
+    const cwd = path.join(process.env.ONSITE_ROOT!, id);
+    seedProblem(id, cwd, 'pending_info');
 
-    // 在 audit append 之前抓 baseline
-    const beforeStatus = onsiteProblemsDb.findById(id)?.status;
-    assert.equal(beforeStatus, 'pending_info');
-    const auditBefore = onsiteStateAuditDb.listByProblemId(id).length;
+    // baseline
+    assert.equal(onsiteProblemsDb.findById(id)?.status, 'pending_info');
+    assert.equal(onsiteStateAuditDb.listByProblemId(id).length, 0);
 
-    // 通过传入一个会让 audit append 抛错的 actor_id 类型?实际更好的做法:
-    // 用一个非法 status 让 updateStatusOnly 自身不抛但 audit append 时 NOT NULL 触发
-    // SQLite NOT NULL on reason — 传空字符串触发 NOT NULL 违规 (reason 列在 schema 中 NOT NULL?)
-    //
-    // 简化做法:我们用一个独立的方法 — 改写 repo 太重,改为使用一个会让 updateStatusOnly
-    // 内部触发 NOT NULL violation 的手段。最干净的:让 problemId 在 audit append 时
-    // 通过外键失败。但 audit 表没有 FK 约束。
-    //
-    // 因此换路径:在 withIsolatedEnv 之外模拟 — 直接把事务内的 audit append 替换为
-    // 抛错的方式不容易。改用单元化方式:复用 canTransition 路径 + 单独读 audit。
-    //
-    // 实际可行:传入一个非常长的 reason (>SQLite TEXT 默认 max length 不会抛),
-    // 所以我们用抛错注入更直接 — 在 db.transaction 的回调里通过 monkey-patch
-    // 不修改 repo。改测试策略:验证 happy path 中 audit 行数 + status 同步更新
-    // (covered in next test)。这里改为验证"非法迁移后,status 与 audit 都没变化"
-    // — 这本身就是一种原子性的体现。
+    // Inject a fault into the audit repo so the inner transaction throws
+    // AFTER `updateStatusOnly` has staged its UPDATE but BEFORE the COMMIT.
+    // better-sqlite3 `db.transaction(fn)()` rolls back any partial writes when
+    // the inner fn throws, so status must still be `pending_info` and audit
+    // count must still be 0 after `apply` rejects.
+    const originalAppend = onsiteStateAuditDb.append;
+    let appendCalls = 0;
+    onsiteStateAuditDb.append = (audit) => {
+      appendCalls += 1;
+      throw new Error('simulated mid-transaction failure');
+    };
 
-    await assert.rejects(
-      apply(id, 'blocked', '非法跳级 — 应该回滚任何部分写入', null),
-      (err: unknown) => err instanceof InvalidStateTransitionError,
-    );
+    try {
+      await assert.rejects(
+        apply(id, 'analyzing', '测试事务回滚 — 应整体回滚', 'test-user'),
+        (err: unknown) => err instanceof Error && /simulated mid-transaction failure/.test(err.message),
+      );
+    } finally {
+      onsiteStateAuditDb.append = originalAppend;
+    }
 
+    assert.equal(appendCalls, 1, 'audit.append 必须被调用一次(在事务内)');
+
+    // Atomicity proof: 即使 updateStatusOnly 已经 stage 了 UPDATE,
+    // audit 抛错触发 ROLLBACK,两条写都没落库。
     const afterStatus = onsiteProblemsDb.findById(id)?.status;
-    assert.equal(afterStatus, 'pending_info', 'status 应保持 pending_info');
+    assert.equal(afterStatus, 'pending_info', 'status 必须保持 pending_info(rollback)');
 
     const auditAfter = onsiteStateAuditDb.listByProblemId(id).length;
-    assert.equal(auditAfter, auditBefore, '非法迁移不应写 audit 行');
+    assert.equal(auditAfter, 0, 'audit 行数必须仍为 0(rollback)');
   });
 });
 
