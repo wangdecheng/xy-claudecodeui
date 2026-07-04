@@ -74,6 +74,7 @@ import { onsiteBroadcast } from './modules/onsite-analysis/onsite-broadcast.js';
 import { onWatcherChange, startOnsiteWatcher, stopOnsiteWatcher } from './modules/onsite-analysis/onsiteWatcher.js';
 import { configureWebPush } from './services/vapid-keys.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+import { onsiteWebSocketService } from './modules/websocket/services/onsite-websocket.service.js';
 import { IS_PLATFORM } from './constants/config.js';
 import { c } from './utils/colors.js';
 
@@ -115,6 +116,8 @@ const wss = createWebSocketServer(server, {
         isPlatform: IS_PLATFORM,
         authenticateWebSocket,
     },
+    // /onsite/ws is a separate path registered on the same wss instance by
+    // onsiteWebSocketService below; the chat /ws path stays unchanged.
     chat: {
         spawnFns: {
             claude: queryClaudeSDK,
@@ -152,6 +155,11 @@ const wss = createWebSocketServer(server, {
     },
     getPluginPort,
 });
+
+// Wire the onsite /onsite/ws hello-frame validator onto the same wss. The
+// service registers its own wss.on('connection') handler that filters on
+// the request pathname, so chat /ws + shell + plugin paths are unaffected.
+onsiteWebSocketService.attach(wss);
 
 // Make WebSocket server available to routes
 app.locals.wss = wss;

@@ -64,6 +64,14 @@ export function createWebSocketServer(
       return;
     }
 
+    // /onsite/ws is handled by onsiteWebSocketService (registered on the
+    // same wss at server/index.js startup). Returning here keeps the
+    // connection alive for the hello-frame handler and suppresses the
+    // [WARN] Unknown WebSocket path log below.
+    if (pathname === '/onsite/ws') {
+      return;
+    }
+
     if (pathname === '/desktop-notifications') {
       handleDesktopNotificationsConnection(ws, incomingRequest);
       return;

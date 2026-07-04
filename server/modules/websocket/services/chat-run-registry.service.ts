@@ -1,9 +1,15 @@
 import path from 'node:path';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
 import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { disciplineSofteningMiddleware } from '@/modules/onsite-analysis/discipline/discipline-softening.middleware.js';
+import { disciplineTraceIdMiddleware } from '@/modules/onsite-analysis/discipline/discipline-trace-id.middleware.js';
+import { disciplineWriteProtectionMiddleware } from '@/modules/onsite-analysis/discipline/discipline-write-protection.middleware.js';
+import { onsiteDisciplineLogDb } from '@/modules/database/repositories/onsite-discipline-log.db.js';
+import { apply as applyState } from '@/modules/onsite-analysis/state-machine.service.js';
 import type {
   LLMProvider,
   NormalizedMessage,
@@ -110,6 +116,127 @@ async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<vo
     if (client.readyState === WS_OPEN_STATE) {
       client.send(payload);
     }
+  });
+}
+
+/**
+ * Loads the `.traceId` file from the run's cwd (used by the trace-id
+ * middleware to know which trace id to scan for in tool_result envelopes).
+ * Returns null if the file is missing or unreadable.
+ */
+function loadTraceIdFromCwd(cwd: string | null | undefined): string | null {
+  if (!cwd) return null;
+  try {
+    // Lazy require — this code path is only hit on the onsite run, which
+    // is a minority case; we don't want to drag in fs into every chat run.
+    const fs = require('node:fs') as typeof import('node:fs');
+    const raw = fs.readFileSync(`${cwd}/.traceId`, 'utf8');
+    const trimmed = raw.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Attaches the three discipline middlewares to the run's outbound connection.
+ *
+ * Only invoked when run.kind === 'onsite'. The middleware `enabledFor` check
+ * uses chatRunRegistry.getRunKind so even if a connection is reused for a
+ * later chat run, the middlewares remain inert.
+ *
+ * Idempotent: each middleware early-returns on a second attachToWs for the
+ * same ws because the middleware swaps ws.send; the second call wraps the
+ * already-wrapped send and discards the inner wrap. We guard with a flag on
+ * the connection to avoid double-wrap stacking.
+ */
+function attachOnsiteDisciplineMiddlewares(run: ChatRun): void {
+  const ws = run.writer.ws as RealtimeClientConnection & {
+    __onsiteDisciplineAttached?: boolean;
+    kind?: string;
+  };
+
+  if (ws.__onsiteDisciplineAttached) {
+    return;
+  }
+  ws.__onsiteDisciplineAttached = true;
+  // Mark ws.kind so the middlewares' enabledFor(ws) (when bound to a fixed
+  // enabledFor closure) can short-circuit. The actual enabledFor closures
+  // we pass here consult chatRunRegistry, but tagging the ws also keeps
+  // other code paths (e.g. logging) happy.
+  ws.kind = 'onsite';
+
+  const problemId = run.appSessionId;
+  const cwd = (() => {
+    const row = onsiteProblemsDb.findById(run.appSessionId);
+    return row?.cwd ?? null;
+  })();
+
+  const enabledFor = (): boolean => chatRunRegistry.getRunKind(run.appSessionId) === 'onsite';
+
+  disciplineSofteningMiddleware.attachToWs(ws as never, {
+    enabledFor: enabledFor as never,
+    logHit: (entry) => {
+      try {
+        onsiteDisciplineLogDb.append({
+          problem_id: entry.problemId,
+          message_id: entry.messageId ?? null,
+          kind: entry.kind,
+          word: entry.word,
+          position: entry.position,
+          cmd: null,
+          stdout_preview: null,
+        });
+      } catch {
+        /* discipline log failures must not block sends */
+      }
+    },
+  });
+
+  disciplineTraceIdMiddleware.attachToWs(ws as never, {
+    enabledFor: enabledFor as never,
+    getTraceId: () => loadTraceIdFromCwd(cwd) ?? process.env.TRACE_ID ?? null,
+    applyBlocked: async (id: string, reason: string): Promise<void> => {
+      try {
+        await applyState(id, 'blocked', reason, null);
+      } catch {
+        /* state-machine rejection or unknown id — ignore */
+      }
+    },
+    logHit: (entry) => {
+      try {
+        onsiteDisciplineLogDb.append({
+          problem_id: entry.problemId,
+          message_id: entry.messageId ?? null,
+          kind: entry.kind,
+          word: entry.word,
+          position: entry.position,
+          cmd: entry.cmd ?? null,
+          stdout_preview: entry.stdout_preview ?? null,
+        });
+      } catch {
+        /* ignore */
+      }
+    },
+  });
+
+  disciplineWriteProtectionMiddleware.attachToWs(ws as never, {
+    enabledFor: enabledFor as never,
+    logHit: (entry) => {
+      try {
+        onsiteDisciplineLogDb.append({
+          problem_id: entry.problemId,
+          message_id: entry.messageId ?? null,
+          kind: entry.kind,
+          word: null,
+          position: null,
+          cmd: entry.cmd,
+          stdout_preview: entry.stdout_preview,
+        });
+      } catch {
+        /* ignore */
+      }
+    },
   });
 }
 
@@ -262,6 +389,14 @@ export const chatRunRegistry = {
     });
 
     runs.set(input.appSessionId, run);
+
+    // Onsite runs get the discipline middlewares attached to the writer's
+    // outbound path so suspect/main signals see real tool_result envelopes
+    // in production. Chat runs are unaffected.
+    if (kind === 'onsite') {
+      attachOnsiteDisciplineMiddlewares(run);
+    }
+
     return run;
   },
 
@@ -311,6 +446,19 @@ export const chatRunRegistry = {
     }
 
     run.writer.updateWebSocket(connection);
+
+    // After re-attaching the new socket, the previously-wrapped ws.send is
+    // gone (the old ws is no longer referenced by the writer). For onsite
+    // runs we re-attach the middlewares on the new socket so discipline
+    // signals continue to fire after a reconnect.
+    if (run.kind === 'onsite') {
+      // Reset the idempotency flag on the new connection (it's a fresh
+      // object so it shouldn't have one, but be defensive).
+      (connection as RealtimeClientConnection & { __onsiteDisciplineAttached?: boolean })
+        .__onsiteDisciplineAttached = false;
+      attachOnsiteDisciplineMiddlewares(run);
+    }
+
     return true;
   },
 
