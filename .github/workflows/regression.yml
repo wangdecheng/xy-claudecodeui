@@ -116,6 +116,21 @@ jobs:
             exit $NHC_EXIT
           fi
 
+      # --- 步骤 2.5 (Batch 10):prototype 字段对齐 diff(Batch 9 实施后必须 0 FAIL) ---
+      - name: Diff onsite UI vs prototype
+        id: proto-diff
+        shell: bash
+        run: |
+          set +e
+          ./scripts/diff-onsite-ui-vs-prototype.sh 2>&1 | tee prototype-diff-run.log
+          PD_EXIT=${PIPESTATUS[0]}
+          set -e
+          echo "proto_diff_exit=$PD_EXIT" >> "$GITHUB_OUTPUT"
+          if [[ $PD_EXIT -ne 0 ]]; then
+            echo "::error::prototype diff 不通过 — 见 prototype-diff-report.md 与 prototype-diff-run.log。修复后重跑。"
+            exit $PD_EXIT
+          fi
+
       # --- 步骤 3:上传 baseline 作为 PR artifact ---
       - name: Upload baseline artifact
         if: always()
@@ -125,6 +140,8 @@ jobs:
           path: |
             chat-regression-baseline.txt
             chat-regression-run.log
+            prototype-diff-report.md
+            prototype-diff-run.log
           if-no-files-found: warn
           retention-days: 30
 
@@ -139,9 +156,15 @@ jobs:
             echo "- diff-clean: ${{ steps.diff.outputs.diff_clean }}"
             echo "- regression: ${{ steps.regression.outputs.regression_exit }}"
             echo "- no-hardcoded-customers: ${{ steps.no-hardcoded.outputs.no_hardcoded_exit }}"
+            echo "- prototype-diff: ${{ steps.proto-diff.outputs.proto_diff_exit }}"
             echo ""
             echo "### baseline"
             echo '```'
             cat chat-regression-baseline.txt 2>/dev/null || echo "(no baseline written)"
+            echo '```'
+            echo ""
+            echo "### prototype diff"
+            echo '```'
+            cat prototype-diff-report.md 2>/dev/null || echo "(no report written)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
