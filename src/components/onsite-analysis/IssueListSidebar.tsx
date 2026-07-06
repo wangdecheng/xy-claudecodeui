@@ -56,13 +56,20 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
 
   const filtered = useMemo<ProblemListItem[]>(() => {
     const q = filter.trim().toLowerCase();
-    if (!q) return problems;
-    return problems.filter(
-      (p) =>
-        p.customer.toLowerCase().includes(q) ||
-        p.iteration.toLowerCase().includes(q) ||
-        p.database.toLowerCase().includes(q),
-    );
+    const base = q
+      ? problems.filter(
+          (p) =>
+            p.customer.toLowerCase().includes(q) ||
+            p.iteration.toLowerCase().includes(q) ||
+            p.database.toLowerCase().includes(q),
+        )
+      : problems;
+    // 按创建时间降序排列，最新的排最前面
+    return [...base].sort((a, b) => {
+      const ta = a.created_at ? new Date(a.created_at).getTime() : 0;
+      const tb = b.created_at ? new Date(b.created_at).getTime() : 0;
+      return tb - ta;
+    });
   }, [problems, filter]);
 
   const grouped = useMemo(() => {

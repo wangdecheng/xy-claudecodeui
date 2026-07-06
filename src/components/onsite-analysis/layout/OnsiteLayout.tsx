@@ -11,6 +11,13 @@
  *
  * The layout does NOT mount <OnsiteWebSocketProvider /> — that lives at the
  * App root (App.tsx) so a single socket is shared across navigation.
+ *
+ * Viewport 锚定: 用 `fixed inset-0`(同 AppContent),让容器直接吃满视口。
+ * 原因:`/onsite/*` 由 React Router 直接 mount 为 route element,父链是
+ * `#root`(`min-h-100vh`,无固定 height)。若外层用 `h-full`,flex 子链
+ * `OnsiteChatStream` 的 `h-full flex-col` 解析不到确定高度,scroll 容器
+ * `flex-1 overflow-y-auto` 的 min-content(子消息列表)会撑爆整个布局
+ * 到几万 px。`fixed inset-0` 直接锚到视口,这一支 flex 链就有确定高度。
  */
 
 import { useParams } from 'react-router-dom';
@@ -24,7 +31,7 @@ export default function OnsiteLayout() {
   return (
     <div
       data-testid="onsite-layout"
-      className="flex h-full w-full bg-background text-foreground"
+      className="fixed inset-0 flex bg-background text-foreground"
     >
       <IssueListSidebar currentProblemId={problemId ?? null} />
       <main className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="onsite-main">

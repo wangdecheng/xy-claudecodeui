@@ -222,6 +222,7 @@ test('list 扫描目录 + 解析 YYYYMMDD-* 格式', async () => {
         iteration: 'master_5.2_3.2',
         database: 'db01',
         status: 'analyzing',
+        description: '客户反馈A问题',
         created_at: '2026-01-01T00:00:00.000Z',
         cwd: root + '/20260101-A客户',
       }),
@@ -232,6 +233,7 @@ test('list 扫描目录 + 解析 YYYYMMDD-* 格式', async () => {
     assert.equal(items.length, 1);
     assert.equal(items[0]!.customer, 'A客户');
     assert.equal(items[0]!.status, 'analyzing');
+    assert.equal(items[0]!.description, '客户反馈A问题');
   });
 });
 
@@ -275,6 +277,7 @@ test('getById 返回 record 或 null', async () => {
     const row = await problemService.getById(created.id);
     assert.ok(row);
     assert.equal(row?.customer, 'X');
+    assert.equal(row?.description, 'X 描述');
 
     const missing = await problemService.getById('does-not-exist');
     assert.equal(missing, null);

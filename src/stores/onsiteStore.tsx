@@ -31,7 +31,7 @@ export interface OnsiteStoredMessage {
   ts: number;
 }
 
-import { useCallback, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
 
@@ -111,13 +111,45 @@ const INITIAL_STATE: OnsiteStoreState = {
 
 // ─── Hook ──────────────────────────────────────────────────────────────────
 
+// ─── Singleton state + cross-component notify ──────────────────────────────
+// 关键设计: state 与 notify 列表都在 module 顶层(整个 app 一份),所有
+// useOnsiteStore() 消费者共享同一份 state。早期版本用 hook-local useRef/
+// useState,导致 IssueListSidebar / NewIssueWizard / OnsiteChatStream
+// 各自一份独立 state——wizard 创建问题后,sidebar 看不到新问题,刷新页面
+// 才出现。这里改成 module-level singleton + 订阅 set,所有消费者在
+// notify() 时统一重渲染。
+//
+// 向下兼容老 API: 函数体里仍叫 stateRef.current.X,通过把 stateRef 包成
+// `{ current: sharedState }` 保持所有原 `stateRef.current = ...` 赋值点不
+// 变(diff 范围更小,review 友好)。
+const sharedState: OnsiteStoreState = { ...INITIAL_STATE };
+const subscribers: Set<() => void> = new Set();
+
+function notifyAll(): void {
+  for (const s of subscribers) {
+    try {
+      s();
+    } catch (err: unknown) {
+      console.warn('[onsiteStore] subscriber notify failed:', err);
+    }
+  }
+}
+
 export function useOnsiteStore(): OnsiteStore {
-  const stateRef = useRef<OnsiteStoreState>({ ...INITIAL_STATE });
-  // `tick` 必须被 useMemo 依赖读取：notify() 递增 tick 触发重渲染后,只有把
-  // tick 放进下方 useMemo 的依赖数组,快照才会重新从 stateRef 派生。否则
-  // useMemo 依赖全是稳定引用,会一直返回首帧的空快照(problems 永远为 [])。
+  // 用假 ref 包装,保留原 stateRef.current.X 的全部调用点不变。
+  const stateRef = { current: sharedState };
+  // `tick` 必须被 useMemo 依赖读取: notify() 递增 tick 触发重渲染后,只有把
+  // tick 放进下方 useMemo 的依赖数组,快照才会重新从 stateRef 派生。
   const [tick, setTick] = useState(0);
-  const notify = useCallback(() => setTick((n) => n + 1), []);
+  // 把 setTick 注册到 module-level 订阅集合;卸载时取消订阅避免泄漏。
+  useEffect(() => {
+    const sub = () => setTick((n) => n + 1);
+    subscribers.add(sub);
+    return () => {
+      subscribers.delete(sub);
+    };
+  }, []);
+  const notify = useCallback(notifyAll, []);
 
   /** Read snapshot — callers must have already called `notify()` upstream. */
   const read = useCallback((): OnsiteStoreState => stateRef.current, []);

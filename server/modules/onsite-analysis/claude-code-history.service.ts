@@ -82,9 +82,28 @@ function lineTimestamp(line: RawJsonlLine): number {
 }
 
 /**
+ * 单行 → 是否属于「锚定」锚:user 消息文本里包含 cwdSlug。
+ * 这是判断一个 JSONL 文件(或其中一段)是否属于本 problem 的关键信号,
+ * 因为同一 Claude project 目录下会同时存在多个 problem 的 session 文件。
+ */
+function lineHasSlug(line: RawJsonlLine, cwdSlug: string): boolean {
+  if (!cwdSlug) return true; // 没传 slug 时不过滤(兼容旧调用)
+  if (line.type !== 'user') return false;
+  const text = isUserTextLine(line);
+  if (!text) return false;
+  return text.includes(cwdSlug);
+}
+
+/**
  * 解析单个 JSONL 文件,产出 StoredMessage[]。跳过空/坏行。
  * 已知限制:不展开 thinking / tool_use / tool_result — 它们对 v1 的
  * UI 重放无价值(text 块就够展示「Claude 说了啥」)。
+ *
+ * 过滤规则(组合):
+ *  1. timestamp < createdAtMs → 丢弃
+ *  2. 当 cwdSlug 非空时,本文件必须至少有 1 行「user 文本包含 slug」
+ *     才保留(否则整文件跳过)—— 这是跨 problem 隔离的关键,
+ *     解决「新建问题后回放 100+ 条其他 problem 的消息」的 bug。
  */
 export function parseJsonlToMessages(
   content: string,
@@ -92,17 +111,25 @@ export function parseJsonlToMessages(
   createdAtMs: number,
   cwdSlug: string,
 ): StoredMessage[] {
-  const out: StoredMessage[] = [];
   const lines = content.split('\n');
+  const parsed: RawJsonlLine[] = [];
   for (const raw of lines) {
     const trimmed = raw.trim();
     if (!trimmed) continue;
-    let line: RawJsonlLine;
     try {
-      line = JSON.parse(trimmed) as RawJsonlLine;
+      parsed.push(JSON.parse(trimmed) as RawJsonlLine);
     } catch {
       continue;
     }
+  }
+  // cwdSlug 非空时,先做「整文件是否锚定」判定,避免在多 problem 共享 project
+  // 目录的情况下把所有 session 的消息都喂给本 problem。
+  if (cwdSlug && !parsed.some((l) => lineHasSlug(l, cwdSlug))) {
+    return [];
+  }
+
+  const out: StoredMessage[] = [];
+  for (const line of parsed) {
     const ts = lineTimestamp(line);
     if (ts === 0) continue;
     if (ts < createdAtMs) continue;

@@ -402,10 +402,20 @@ const addProviderSessionIdMapping = (db: Database): void => {
   const columnNames = sessionsTableInfo.map((column) => column.name);
 
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'provider_session_id', 'TEXT');
+  // 仅回填 chat 行:它们的 session_id 历史上就是 provider-native id(早期
+  // 版本直接把 Claude 的 UUID 当主键),所以 session_id → provider_session_id
+  // 是 1:1 不变映射。
+  //
+  // 必须显式排除 onsite 行:onsite session 由 problemId 当主键(如
+  // `20260706-不涉及三方对接`),Claude CLI 拒绝非 UUID 的 --resume 值
+  // (`Provided value "20260706-..." is not a UUID and does not match any
+  // session title`)。onsite 的 provider_session_id 必须由 Claude runtime
+  // 真正跑出第一个 session 时写回(UUID),空着等它回写才对。
   db.exec(`
     UPDATE sessions
     SET provider_session_id = session_id
     WHERE provider_session_id IS NULL
+      AND (kind IS NULL OR kind = 'chat')
   `);
 };
 
@@ -507,6 +517,7 @@ export const runMigrations = (db: Database) => {
     // Idempotent: PRAGMA table_info skip when already present.
     const onsiteProblemsColumns = getTableInfo(db, 'onsite_problems').map((c) => c.name);
     addColumnToTableIfNotExists(db, 'onsite_problems', onsiteProblemsColumns, 'root_cause_text', 'TEXT');
+    addColumnToTableIfNotExists(db, 'onsite_problems', onsiteProblemsColumns, 'description', 'TEXT DEFAULT \'\'');
 
     // Onsite indexes (kept in migrations so we don't depend on INIT_SCHEMA_SQL
     // having run for an upgraded database that pre-dates these tables).

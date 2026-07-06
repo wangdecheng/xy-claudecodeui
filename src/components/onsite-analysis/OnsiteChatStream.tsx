@@ -95,6 +95,14 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // stream_delta 累积: Claude SDK 实时流不发完整 assistant text,而是连续
+  // stream_delta 推送文本片段。这里 accum 到 ref,100ms 批量 flush 一次
+  // (与 chat 路径 useChatRealtimeHandlers 保持一致),避免每个 delta 重渲染。
+  const accumulatedRef = useRef('');
+  const streamTimerRef = useRef<number | null>(null);
+  // 稳定的 streaming 消息 id,跨多次 setMessages 复用,防止 React key 漂移
+  const streamingMsgIdRef = useRef(`streaming-${Date.now()}`);
+
   // ─── effects ────────────────────────────────────────────────────────
 
   // Mount: refresh list + push hello frame with current problem.
@@ -144,15 +152,27 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     };
   }, [problemId, loadMessages]);
 
+  // setHelloContext — when problem 记录就绪时将 cwd 告诉服务器
   useEffect(() => {
     if (problem) {
       setHelloContext(problemId, problem.cwd);
     }
-    // reset stream on problem switch
+  }, [problemId, problem, setHelloContext]);
+
+  // reset stream on problemId switch(仅路由参数改变,不是 problem 对象引用改变)
+  useEffect(() => {
     setMessages([]);
     setDiscipline({ softening: 0, writeOriginalLog: 0, log: [] });
     setDraft('');
-  }, [problemId, problem, setHelloContext]);
+    // 重置流累积状态,防止上一个 problem 的 stream_delta 残余泄漏
+    if (streamTimerRef.current) {
+      clearTimeout(streamTimerRef.current);
+      streamTimerRef.current = null;
+    }
+    accumulatedRef.current = '';
+    streamingMsgIdRef.current = `streaming-${Date.now()}`;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [problemId]);
 
   // Subscribe to WS frames.
   useEffect(() => {
@@ -240,8 +260,90 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             ts,
           },
         ]);
+      } else if (ev.kind === 'stream_delta' && content) {
+        // 实时流文本累积: Claude SDK 不发完整 assistant text,而是连续
+        // stream_delta 推送文本片段。用 ref 累积 + 100ms 定时器批量
+        // flush(与 chat 路径 useChatRealtimeHandlers 一致),用稳定 id
+        // 避免 React 因 key 变化销毁/重建 DOM。
+        accumulatedRef.current += content;
+        if (!streamTimerRef.current) {
+          streamTimerRef.current = window.setTimeout(() => {
+            streamTimerRef.current = null;
+            const text = accumulatedRef.current;
+            setMessages((cur) => {
+              const last = cur[cur.length - 1];
+              if (last && last.id === streamingMsgIdRef.current) {
+                return [...cur.slice(0, -1), { ...last, text, ts: Date.now() }];
+              }
+              return [
+                ...cur,
+                {
+                  id: streamingMsgIdRef.current,
+                  role: 'assistant',
+                  kind: 'text' as const,
+                  text,
+                  ts: Date.now(),
+                },
+              ];
+            });
+          }, 100);
+        }
+      } else if (ev.kind === 'complete') {
+        // 流结束: 刷新剩余累积文本,重置 accum state
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+        const remaining = accumulatedRef.current;
+        if (remaining) {
+          setMessages((cur) => {
+            const last = cur[cur.length - 1];
+            if (last && last.id === streamingMsgIdRef.current) {
+              return [...cur.slice(0, -1), { ...last, text: remaining, ts: Date.now() }];
+            }
+            return [
+              ...cur,
+              {
+                id: streamingMsgIdRef.current,
+                role: 'assistant',
+                kind: 'text' as const,
+                text: remaining,
+                ts: Date.now(),
+              },
+            ];
+          });
+        }
+        accumulatedRef.current = '';
+        streamingMsgIdRef.current = `streaming-${Date.now()}`;
+      } else if (ev.kind === 'stream_end') {
+        // 内容块边界: flush 但不重置 id(下一个 content block 继续追到
+        // 同一 streaming 气泡),与 chat 路径的 stream_end 语义一致。
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+        const text = accumulatedRef.current;
+        if (text) {
+          setMessages((cur) => {
+            const last = cur[cur.length - 1];
+            if (last && last.id === streamingMsgIdRef.current) {
+              return [...cur.slice(0, -1), { ...last, text, ts: Date.now() }];
+            }
+            return [
+              ...cur,
+              {
+                id: streamingMsgIdRef.current,
+                role: 'assistant',
+                kind: 'text' as const,
+                text,
+                ts: Date.now(),
+              },
+            ];
+          });
+        }
+        accumulatedRef.current = '';
       }
-      // thinking / stream_delta / complete → handled silently for Batch 7.
+      // thinking → silently dropped (no render target yet).
     });
   }, [subscribe, problemId]);
 

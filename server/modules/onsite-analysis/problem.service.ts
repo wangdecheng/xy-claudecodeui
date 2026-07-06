@@ -76,6 +76,7 @@ export type ProblemRecord = {
   cwd: string;
   problem_json_path: string | null;
   description: string;
+  created_at?: string;
 };
 
 export type ProblemListItem = ProblemRecord & {
@@ -180,6 +181,7 @@ export const problemService = {
     const storedDatabase = input.database === 'other' ? null : input.database;
 
     const problemJsonPath = path.join(dirPath, 'problem.json');
+    const now = today.toISOString();
     const record: ProblemRecord = {
       id: deriveIdFromDirName(dirName),
       customer: sanitizedCustomer,
@@ -190,6 +192,7 @@ export const problemService = {
       cwd: dirPath,
       problem_json_path: problemJsonPath,
       description: storedDescription,
+      created_at: now,
     };
 
     const jsonPayload = {
@@ -245,6 +248,9 @@ export const problemService = {
       let database: string | null = null;
       let thirdBridgeBranch: string | null = null;
 
+      let description = '';
+      let created_at: string | undefined;
+
       try {
         const raw = await readFile(jsonPath, 'utf8');
         const json = JSON.parse(raw) as Record<string, unknown>;
@@ -255,8 +261,19 @@ export const problemService = {
         if (typeof json.third_bridge_branch === 'string' || json.third_bridge_branch === null) {
           thirdBridgeBranch = (json.third_bridge_branch as string | null) ?? null;
         }
+        if (typeof json.description === 'string') description = json.description;
+        if (typeof json.created_at === 'string') created_at = json.created_at;
       } catch {
         // No problem.json or unparseable — fall back to defaults
+      }
+
+      // 没有 created_at 时从目录名推断(YYYYMMDD-xxx → YYYY-MM-DD)
+      if (!created_at) {
+        const dateMatch = YYYYMMDD_PREFIX_REGEX.exec(entry.name);
+        if (dateMatch && dateMatch[1]) {
+          const d = dateMatch[1];
+          created_at = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T00:00:00.000Z`;
+        }
       }
 
       items.push({
@@ -268,6 +285,8 @@ export const problemService = {
         status,
         cwd: dirPath,
         problem_json_path: existsSync(jsonPath) ? jsonPath : null,
+        description,
+        created_at,
       });
     }
 
@@ -287,6 +306,7 @@ export const problemService = {
         status: row.status,
         cwd: row.cwd,
         problem_json_path: row.problem_json_path,
+        description: row.description,
       };
     }
     // DB miss 时回退磁盘:可能是终端 agent 提前建的目录(无 problem.json 或 DB 未同步)
@@ -299,6 +319,8 @@ export const problemService = {
     let iteration: string | null = null;
     let database: string | null = null;
     let thirdBridgeBranch: string | null = null;
+    let description = '';
+    let created_at: string | undefined;
     const jsonPath = path.join(dirPath, 'problem.json');
     try {
       const raw = await readFile(jsonPath, 'utf8');
@@ -310,8 +332,19 @@ export const problemService = {
       if (typeof json.third_bridge_branch === 'string' || json.third_bridge_branch === null) {
         thirdBridgeBranch = (json.third_bridge_branch as string | null) ?? null;
       }
+      if (typeof json.description === 'string') description = json.description;
+      if (typeof json.created_at === 'string') created_at = json.created_at;
     } catch {
       // no problem.json — keep defaults
+    }
+
+    // 没有 created_at 时从目录名推断(YYYYMMDD-xxx → YYYY-MM-DD)
+    if (!created_at) {
+      const dateMatch = YYYYMMDD_PREFIX_REGEX.exec(id);
+      if (dateMatch && dateMatch[1]) {
+        const d = dateMatch[1];
+        created_at = `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}T00:00:00.000Z`;
+      }
     }
 
     return {
@@ -323,6 +356,8 @@ export const problemService = {
       status,
       cwd: dirPath,
       problem_json_path: existsSync(jsonPath) ? jsonPath : null,
+      description,
+      created_at,
     };
   },
 };

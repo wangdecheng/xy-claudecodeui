@@ -24,6 +24,7 @@ export type OnsiteProblemRecord = {
   updated_at: string;
   mtime: string | null;
   root_cause_text: string | null;
+  description: string;
 };
 
 export type OnsiteProblemListItem = OnsiteProblemRecord;
@@ -32,15 +33,15 @@ type ProblemInsertInput = Omit<OnsiteProblemRecord, 'created_at' | 'updated_at' 
 
 const INSERT_SQL = `
 INSERT INTO onsite_problems (
-  id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path
+  id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path, description
 ) VALUES (
-  @id, @customer, @third_bridge_branch, @iteration, @database, @status, @cwd, @problem_json_path
+  @id, @customer, @third_bridge_branch, @iteration, @database, @status, @cwd, @problem_json_path, @description
 )
 `;
 
 const SELECT_COLUMNS = `
 id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path,
-created_at, updated_at, mtime, root_cause_text
+created_at, updated_at, mtime, root_cause_text, description
 `;
 
 export const onsiteProblemsDb = {
@@ -55,6 +56,7 @@ export const onsiteProblemsDb = {
       status: p.status,
       cwd: p.cwd,
       problem_json_path: p.problem_json_path,
+      description: p.description ?? '',
     });
     return p.id;
   },
