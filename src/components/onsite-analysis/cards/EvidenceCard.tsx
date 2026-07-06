@@ -2,8 +2,11 @@
  * EvidenceCard — 🔍 evidence / proof rendering (对齐原型 .card.evidence + .logquote)。
  *
  * CardRenderer dispatches here when `<card type="evidence">` is found.
- * body 以 logquote 样式渲染:命中计数为 0 的片段(`0` / `count=0` / `没有结果`)标红,
- * 便于一眼看出 traceId 全目录 0 命中。底部提供复制按钮。
+ * body 以 logquote 样式渲染,三色高亮(REQ-4.10):
+ *   - err (红色): 命中 0 计数 / 无结果 / 未找到
+ *   - hl  (琥珀加粗): 关键字 / 注释行 (# 起头 / 已穷尽 / 关键 / 范围)
+ *   - ok  (绿色): 命中 ≥1 的成功行 (路径:N / matches:N / 命中 N 条)
+ * 底部提供复制按钮。
  */
 
 import { Fragment } from 'react';
@@ -15,25 +18,71 @@ export interface EvidenceCardProps {
   body?: string;
 }
 
-// 命中“0 计数 / 无结果”语义的片段 → 标红;其余原样。
+// err: 命中 0 计数 / 无结果 语义的片段 → 标红
 const ZERO_HIT = /(\bcount\s*=\s*0\b|:\s*0(?=\s|$)|\b0\s*(?:结果|命中|matches?)\b|没有结果|无命中|未找到|no matches)/gi;
+// hl: 关键字 / 注释行(以 # 起头,或含 已穷尽 / 关键 / 范围) → 琥珀加粗
+const HL_HIT = /(?:^|\s)(#\s.*|已穷尽候选.*|.*关键.*|.*范围.*)/g;
+// ok: 命中 ≥1 的成功行(路径: N / matches: N / 命中 N 条) → 绿
+const OK_HIT = /(:\s+[1-9]\d*\s*$|\bmatches?:\s*\d+\b|\bhit:\s*\d+\b|命中\s*[1-9]\d*\s*条)/gi;
 
-function renderLogLine(line: string, key: string) {
+type SpanKind = 'err' | 'hl' | 'ok' | 'plain';
+
+function renderLineWithSpans(line: string, key: string): React.ReactNode[] {
+  type Hit = { start: number; end: number; kind: SpanKind };
+  const hits: Hit[] = [];
+
+  const collect = (re: RegExp, kind: SpanKind) => {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(line)) !== null) {
+      // 对 HL_HIT 我们希望保留整个匹配(含前导空白),用 m.index 即可
+      hits.push({ start: m.index, end: m.index + m[0].length, kind });
+    }
+  };
+  collect(ZERO_HIT, 'err');
+  collect(HL_HIT, 'hl');
+  collect(OK_HIT, 'ok');
+
+  if (hits.length === 0) return [line || ' '];
+
+  // 按 start 排序;重叠时优先级 err > hl > ok
+  const priority: Record<SpanKind, number> = { err: 3, hl: 2, ok: 1, plain: 0 };
+  hits.sort((a, b) => a.start - b.start || priority[b.kind] - priority[a.kind]);
+
+  // 移除被高优先级覆盖的子区间
+  const filtered: Hit[] = [];
+  let cursor = 0;
+  for (const h of hits) {
+    if (h.start >= cursor) {
+      filtered.push(h);
+      cursor = h.end;
+    }
+  }
+
   const parts: React.ReactNode[] = [];
   let last = 0;
-  let m: RegExpExecArray | null;
-  ZERO_HIT.lastIndex = 0;
-  while ((m = ZERO_HIT.exec(line)) !== null) {
-    if (m.index > last) parts.push(<Fragment key={`${key}-t${last}`}>{line.slice(last, m.index)}</Fragment>);
+  for (const h of filtered) {
+    if (h.start > last) parts.push(<Fragment key={`${key}-t${last}`}>{line.slice(last, h.start)}</Fragment>);
+    const cls =
+      h.kind === 'err'
+        ? 'font-semibold text-red-600 dark:text-red-400'
+        : h.kind === 'hl'
+          ? 'font-semibold text-amber-700 dark:text-amber-300'
+          : 'font-semibold text-green-700 dark:text-green-400';
     parts.push(
-      <span key={`${key}-h${m.index}`} className="font-semibold text-red-600 dark:text-red-400">
-        {m[0]}
+      <span key={`${key}-${h.kind}-${h.start}`} className={cls}>
+        {line.slice(h.start, h.end)}
       </span>,
     );
-    last = m.index + m[0].length;
+    last = h.end;
   }
   if (last < line.length) parts.push(<Fragment key={`${key}-e`}>{line.slice(last)}</Fragment>);
-  return <div key={key}>{parts.length ? parts : line || ' '}</div>;
+  return parts;
+}
+
+function renderLogLine(line: string, key: string) {
+  const parts = renderLineWithSpans(line, key);
+  return <div key={key}>{parts.length ? parts : line || ' '}</div>;
 }
 
 export default function EvidenceCard({ title, body }: EvidenceCardProps) {
