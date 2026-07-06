@@ -53,6 +53,8 @@ export type CreateProblemInput = {
   cwd: string;
   /** YYYY-MM-DD; if absent, defaults to today. Future dates are rejected. */
   date?: string;
+  /** Optional problem title (≤80 chars). Backend truncates defensively. */
+  title?: string;
 };
 
 export type ProblemRecord = {
@@ -64,6 +66,7 @@ export type ProblemRecord = {
   status: string;
   cwd: string;
   problem_json_path: string | null;
+  title?: string | null;
 };
 
 export type ProblemListItem = ProblemRecord & {
@@ -157,16 +160,25 @@ export const problemService = {
     const dirPath = path.join(root, dirName);
     await mkdir(dirPath, { recursive: true });
 
+    // 数据库选「其他」(value=other)时存 null,问题进 pending_info 等待补充
+    const storedDatabase = input.database === 'other' ? null : input.database;
+    // title 截断到 80 字符(防御性,前端已校验)
+    const storedTitle =
+      typeof input.title === 'string' && input.title.length > 0
+        ? input.title.slice(0, 80)
+        : null;
+
     const problemJsonPath = path.join(dirPath, 'problem.json');
     const record: ProblemRecord = {
       id: deriveIdFromDirName(dirName),
       customer: sanitizedCustomer,
       third_bridge_branch: input.third_bridge_branch,
       iteration: input.iteration,
-      database: input.database,
+      database: storedDatabase as string | null as string, // legacy: column is non-null; DB layer accepts null
       status: 'pending_info',
       cwd: dirPath,
       problem_json_path: problemJsonPath,
+      title: storedTitle,
     };
 
     const jsonPayload = {
@@ -174,10 +186,11 @@ export const problemService = {
       customer: record.customer,
       third_bridge_branch: record.third_bridge_branch,
       iteration: record.iteration,
-      database: record.database,
+      database: storedDatabase,
       status: record.status,
       cwd: record.cwd,
       problem_json_path: record.problem_json_path,
+      title: storedTitle,
       created_at: today.toISOString(),
     };
     await writeFile(problemJsonPath, JSON.stringify(jsonPayload, null, 2), 'utf8');
@@ -188,10 +201,11 @@ export const problemService = {
         customer: record.customer,
         third_bridge_branch: record.third_bridge_branch,
         iteration: record.iteration,
-        database: record.database,
+        database: storedDatabase as string | null as string,
         status: record.status,
         cwd: record.cwd,
         problem_json_path: record.problem_json_path,
+        title: storedTitle,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

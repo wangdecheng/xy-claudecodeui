@@ -49,6 +49,8 @@ export interface ProblemRecord {
   created_at?: string;
   /** Optional: only populated after confirm-root-cause (Batch 4.3). */
   root_cause_text?: string | null;
+  /** Optional: human-readable problem title (e.g. "第三方登录失败"). ≤ 80 chars. Added in Batch 9 (REQ-1.12). */
+  title?: string | null;
 }
 
 /**

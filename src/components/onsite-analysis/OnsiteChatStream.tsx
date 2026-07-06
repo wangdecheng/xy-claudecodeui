@@ -279,7 +279,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       >
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="onsite-chat-title" className="text-sm font-semibold text-foreground">
-            {problem.customer} · 现场问题
+            {problem.customer} · {problem.title?.trim() || '现场问题'}
           </span>
           <StatusBadge status={problem.status} />
           <div className="ml-auto flex items-center gap-2">

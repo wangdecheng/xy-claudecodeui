@@ -16,6 +16,8 @@ import { cn } from '../../lib/utils';
 export const DATABASE_KINDS = ['mysql', 'dm', 'kingbase', 'oracle'] as const;
 export type DatabaseKind = (typeof DATABASE_KINDS)[number];
 
+export const DATABASE_KIND_OTHER = 'other';
+
 export interface DatabaseSelectProps {
   value: string;
   onChange: (next: string) => void;
@@ -51,7 +53,16 @@ export default function DatabaseSelect({
             {d}
           </option>
         ))}
+        <option value={DATABASE_KIND_OTHER}>其他</option>
       </select>
+      {value === DATABASE_KIND_OTHER && (
+        <p
+          data-testid="onsite-database-other-hint"
+          className="text-[11px] text-amber-700 dark:text-amber-300"
+        >
+          {t('onsite:wizard.otherHint')}
+        </p>
+      )}
     </div>
   );
 }
