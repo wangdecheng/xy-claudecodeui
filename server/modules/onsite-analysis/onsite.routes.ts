@@ -40,6 +40,7 @@ import {
   sanitizeCustomerLabel,
 } from './problem.service.js';
 import { messagesStore } from './messages-store.service.js';
+import { loadHistoryFromClaudeCode } from './claude-code-history.service.js';
 import {
   InvalidStateTransitionError,
   ProblemNotFoundError,
@@ -542,10 +543,13 @@ router.get('/problems/:id/files', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// GET /api/onsite/problems/:id/messages (Batch 8 I1)
+// GET /api/onsite/problems/:id/messages (Batch 8 I1 + 磁盘回放)
 // ---------------------------------------------------------------------------
 //
-// 返回该 problem 最近 500 条 chat 消息(server 端 ring buffer,正序)。
+// 返回该 problem 的 chat 消息,合并两个数据源(都按 ts 正序):
+//  1. server 端 messagesStore(纯内存,捕获经 OnsiteChatStream UI 走的 ws)
+//  2. Claude Code CLI 磁盘 JSONL(若内存为空,回退到 ~/.claude/projects/...
+//     扫描,过滤 timestamp >= problem.created_at)
 // 写入路径在 onsite-websocket.service.ts:attachHelloContext 包 ws.send。
 // 401 由 mount 点 authenticateToken 处理。
 
@@ -557,7 +561,21 @@ router.get('/problems/:id/messages', async (req, res) => {
     if (!problem) {
       return res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
     }
-    const messages = messagesStore.getByProblemId(id);
+    let messages = messagesStore.getByProblemId(id);
+    if (messages.length === 0) {
+      // 内存为空 → 回退到磁盘 JSONL(用户在 Claude Code CLI 跑过的历史)
+      // 注:problem.service 的 ProblemRecord 暂未暴露 created_at 字段,
+      // 所以不传 createdAtMs → loadHistoryFromClaudeCode 内部用 0,
+      // 即不过滤时间,返回该 project 全部 session 的所有消息。
+      // 后续如需 per-problem 过滤,需要先在 ProblemRecord 上加 created_at。
+      try {
+        const disk = await loadHistoryFromClaudeCode(id, problem.cwd, 0);
+        messages = disk;
+      } catch {
+        // 读盘失败不要 500 — 返回空数组,前端显示空
+        messages = [];
+      }
+    }
     res.json({ problem_id: id, messages });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'list messages failed';

@@ -27,7 +27,7 @@ export default function OnsiteLayout() {
       className="flex h-full w-full bg-background text-foreground"
     >
       <IssueListSidebar currentProblemId={problemId ?? null} />
-      <main className="flex-1 min-w-0 overflow-hidden" data-testid="onsite-main">
+      <main className="min-h-0 min-w-0 flex-1 overflow-hidden" data-testid="onsite-main">
         {problemId ? (
           <OnsiteChatStream key={problemId} problemId={problemId} />
         ) : (

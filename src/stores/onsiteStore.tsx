@@ -22,6 +22,15 @@
  * consumer to re-render on every action. Same pattern as useSessionStore.
  */
 
+/** 单条历史消息(与 server messagesStore.StoredMessage 同构)。 */
+export interface OnsiteStoredMessage {
+  problemId: string;
+  role: 'user' | 'assistant';
+  kind: 'text' | 'tool_use' | 'tool_result' | 'other';
+  content: string;
+  ts: number;
+}
+
 import { useCallback, useMemo, useRef, useState } from 'react';
 
 import { authenticatedFetch } from '../utils/api';
@@ -68,6 +77,13 @@ export interface OnsiteStoreActions {
   uploadFiles: (id: string, files: File[]) => Promise<UploadResult[]>;
   /** GET /api/onsite/problems/:id/files and cache in `files[id]`. */
   loadFiles: (id: string) => Promise<OnsiteFile[]>;
+  /**
+   * GET /api/onsite/problems/:id/messages — 拉该 problem 的 server 端
+   * ring buffer 历史消息(最多 500 条,正序)。不缓存到 store,直接返回,
+   * 由 OnsiteChatStream 自己 merge 到本地 messages state。
+   * 404(unknown problem)→ 返回空数组,不做错误 toast。
+   */
+  loadMessages: (id: string) => Promise<OnsiteStoredMessage[]>;
 }
 
 export interface OnsiteStoreSelectors {
@@ -285,6 +301,33 @@ export function useOnsiteStore(): OnsiteStore {
     [notify],
   );
 
+  const loadMessages = useCallback(
+    async (id: string): Promise<OnsiteStoredMessage[]> => {
+      try {
+        const res = await authenticatedFetch(
+          `/api/onsite/problems/${encodeURIComponent(id)}/messages`,
+        );
+        if (!res.ok) {
+          // 404 是合法(新 problem 还没消息),不要刷 lastError。
+          // 其他非 2xx 才记错误。
+          if (res.status !== 404) {
+            const text = await res.text().catch(() => '');
+            stateRef.current.lastError = `loadMessages failed: HTTP ${res.status} ${text}`;
+            notify();
+          }
+          return [];
+        }
+        const body = (await res.json()) as { messages?: OnsiteStoredMessage[] };
+        return Array.isArray(body.messages) ? body.messages : [];
+      } catch (err: unknown) {
+        stateRef.current.lastError = err instanceof Error ? err.message : String(err);
+        notify();
+        return [];
+      }
+    },
+    [notify],
+  );
+
   // ─── selectors (snapshot reads) ────────────────────────────────────────
 
   /** getProblem — returns the matching record or undefined. */
@@ -330,6 +373,7 @@ export function useOnsiteStore(): OnsiteStore {
       patchStatus,
       uploadFiles,
       loadFiles,
+      loadMessages,
       getProblem,
       getUploadProgress,
       getAnyUploading,
@@ -345,6 +389,7 @@ export function useOnsiteStore(): OnsiteStore {
     patchStatus,
     uploadFiles,
     loadFiles,
+    loadMessages,
     getProblem,
     getUploadProgress,
     getAnyUploading,

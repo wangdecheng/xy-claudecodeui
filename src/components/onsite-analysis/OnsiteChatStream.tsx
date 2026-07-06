@@ -81,6 +81,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
   const problem: ProblemRecord | undefined = getProblem(problemId);
   const files = store.getFiles(problemId);
+  const loadMessages = store.loadMessages;
 
   const [messages, setMessages] = useState<OnsiteStreamMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -105,6 +106,43 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   useEffect(() => {
     if (problemId) void loadFiles(problemId);
   }, [problemId, loadFiles]);
+
+  // 切到某个 problem:从 server 端 ring buffer 拉历史消息回放。
+  // 修复前 messages 仅来自 WS subscribe,切走后再切回看不到历史。
+  // 用 cancelled 标记丢弃过期响应,避免快速切 problem 时旧 fetch 覆盖新 state。
+  useEffect(() => {
+    if (!problemId) return;
+    let cancelled = false;
+    void (async () => {
+      const stored = await loadMessages(problemId);
+      if (cancelled) return;
+      if (stored.length === 0) return;
+      // 转成 OnsiteStreamMessage,按 ts 正序(API 已正序返回)。
+      const replayed: OnsiteStreamMessage[] = stored.map((m) => {
+        if (m.kind === 'tool_use' || m.kind === 'tool_result') {
+          return {
+            id: `srv-${m.problemId}-${m.ts}-${m.kind}`,
+            role: 'tool',
+            kind: m.kind,
+            text: m.content,
+            ts: m.ts,
+          };
+        }
+        // text / other 一律当 text 渲染
+        return {
+          id: `srv-${m.problemId}-${m.ts}-${m.kind}`,
+          role: m.role === 'user' ? 'user' : 'assistant',
+          kind: 'text',
+          text: m.content,
+          ts: m.ts,
+        };
+      });
+      setMessages(replayed);
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [problemId, loadMessages]);
 
   useEffect(() => {
     if (problem) {
@@ -275,7 +313,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     <div data-testid="onsite-chat-stream" className="flex h-full flex-col">
       <header
         data-testid="onsite-chat-header"
-        className="flex flex-col gap-2 border-b border-border bg-card/50 px-4 py-2"
+        className="flex shrink-0 flex-col gap-2 border-b border-border bg-card/50 px-4 py-2"
       >
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="onsite-chat-title" className="text-sm font-semibold text-foreground">
@@ -317,7 +355,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       <div
         ref={scrollRef}
         data-testid="onsite-chat-scroll"
-        className="flex-1 space-y-2 overflow-y-auto px-4 py-3"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto px-4 py-3"
       >
         {messages.length > 0 &&
           messages.map((m) => (
@@ -325,7 +363,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           ))}
       </div>
 
-      <footer className="flex flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
+      <footer className="flex shrink-0 flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
         <input
           ref={fileInputRef}
           type="file"
