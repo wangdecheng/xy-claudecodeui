@@ -17,6 +17,7 @@
     "iterationPlaceholder": "请选择版本",
     "database": "数据库",
     "databasePlaceholder": "请输入数据库名",
+    "databaseOther": "其他",
     "otherHint": "未指定数据库类型,请稍后在现场补充",
     "dzNote": "每个压缩包将解压到独立子目录(pod-1/、pod-2/…),禁止覆盖——避免排查盲区",
     "upload": "上传日志/资料(可选)",
@@ -28,6 +29,13 @@
     "titleField": "问题主标题(可选)",
     "titlePlaceholder": "如:第三方登录失败",
     "titleTooLong": "标题不能超过 80 字符"
+  },
+  "chat": {
+    "userRole": "现场反馈",
+    "assistantRole": "Claude · 取证顺序:日志 → 源码 → DB",
+    "placeholder": "补充信息、粘贴日志片段,或让 Claude 继续下一步取证…",
+    "composerHint": "仅对接 Claude Code · 工作目录锁定在 {cwd}",
+    "emptyDefault": "暂无消息"
   },
   "status": {
     "pending_info": "待补充信息",

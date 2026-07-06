@@ -350,7 +350,9 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="补充信息、粘贴日志片段,或让 Claude 继续下一步取证…"
+            placeholder={t('onsite:chat.placeholder', {
+              defaultValue: '补充信息、粘贴日志片段,或让 Claude 继续下一步取证…',
+            })}
             rows={2}
             className="flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
           />
@@ -379,7 +381,10 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           data-testid="onsite-composer-hint"
           className="text-center text-[11px] text-muted-foreground"
         >
-          仅对接 Claude Code · 工作目录锁定在 {problem.cwd}
+          {t('onsite:chat.composerHint', {
+            cwd: problem.cwd,
+            defaultValue: `仅对接 Claude Code · 工作目录锁定在 ${problem.cwd}`,
+          })}
         </p>
       </footer>
     </div>
@@ -404,7 +409,12 @@ function MessageBubble({
   }, [isUser, isAssistant]);
 
   // msg-role 行(REQ-4.6):用户「现场反馈」/AI「Claude · 取证顺序:日志 → 源码 → DB」
-  const roleLabel = isUser ? '现场反馈' : isAssistant ? 'Claude · 取证顺序:日志 → 源码 → DB' : null;
+  const { t } = useTranslation(['onsite']);
+  const roleLabel = isUser
+    ? t('onsite:chat.userRole', { defaultValue: '现场反馈' })
+    : isAssistant
+      ? t('onsite:chat.assistantRole', { defaultValue: 'Claude · 取证顺序:日志 → 源码 → DB' })
+      : null;
 
   return (
     <div

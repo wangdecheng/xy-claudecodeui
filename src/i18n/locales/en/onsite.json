@@ -17,6 +17,7 @@
     "iterationPlaceholder": "Select an iteration",
     "database": "Database",
     "databasePlaceholder": "Enter database name",
+    "databaseOther": "Other",
     "otherHint": "Database type unspecified — please confirm on site later",
     "dzNote": "Each archive extracts to its own subdirectory (pod-1/, pod-2/, …) — overwrites are blocked to avoid blind spots.",
     "upload": "Upload logs / artifacts (optional)",
@@ -28,6 +29,13 @@
     "titleField": "Problem title (optional)",
     "titlePlaceholder": "e.g. Third-party login failure",
     "titleTooLong": "Title must be at most 80 characters"
+  },
+  "chat": {
+    "userRole": "Onsite feedback",
+    "assistantRole": "Claude · Investigation order: logs → source → DB",
+    "placeholder": "Add context, paste a log snippet, or ask Claude to continue the next step…",
+    "composerHint": "Claude Code only · CWD locked at {cwd}",
+    "emptyDefault": "No messages yet"
   },
   "status": {
     "pending_info": "Awaiting info",

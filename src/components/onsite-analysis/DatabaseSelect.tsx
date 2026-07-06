@@ -53,7 +53,7 @@ export default function DatabaseSelect({
             {d}
           </option>
         ))}
-        <option value={DATABASE_KIND_OTHER}>其他</option>
+        <option value={DATABASE_KIND_OTHER}>{t('onsite:wizard.databaseOther', { defaultValue: '其他' })}</option>
       </select>
       {value === DATABASE_KIND_OTHER && (
         <p
