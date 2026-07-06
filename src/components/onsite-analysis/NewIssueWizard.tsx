@@ -236,8 +236,10 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           </div>
         )}
 
-        {createdId && (
+        {createdId ? (
           <LogUploader problemId={createdId} />
+        ) : (
+          <LogUploader problemId={null} />
         )}
 
         <div className="flex justify-end gap-2">

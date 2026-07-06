@@ -108,16 +108,19 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
       </label>
       <div
         role="button"
-        tabIndex={0}
+        tabIndex={problemId ? 0 : -1}
+        aria-disabled={!problemId}
         data-testid="onsite-log-uploader"
         onDragOver={(e) => {
+          if (!problemId) return;
           e.preventDefault();
           setDragging(true);
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
-        onClick={() => inputRef.current?.click()}
+        onClick={() => problemId && inputRef.current?.click()}
         onKeyDown={(e) => {
+          if (!problemId) return;
           if (e.key === 'Enter' || e.key === ' ') {
             e.preventDefault();
             inputRef.current?.click();
@@ -131,6 +134,14 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
       >
         <Upload className="h-4 w-4" />
         <span>{t('onsite:wizard.uploadHint')}</span>
+        {!problemId && (
+          <span
+            data-testid="onsite-log-uploader-disabled-hint"
+            className="text-[10px] text-amber-700 dark:text-amber-300"
+          >
+            {t('onsite:wizard.uploadBeforeCreate', { defaultValue: '请先创建问题再上传文件' })}
+          </span>
+        )}
         <input
           ref={inputRef}
           type="file"
