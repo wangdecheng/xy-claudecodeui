@@ -321,7 +321,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
         )}
       </div>
 
-      <footer className="border-t border-border bg-card/50 px-4 py-2">
+      <footer className="flex flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
         <input
           ref={fileInputRef}
           type="file"
@@ -380,6 +380,12 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             停止
           </button>
         </div>
+        <p
+          data-testid="onsite-composer-hint"
+          className="text-center text-[11px] text-muted-foreground"
+        >
+          仅对接 Claude Code · 工作目录锁定在 {problem.cwd}
+        </p>
       </footer>
     </div>
   );
@@ -392,29 +398,60 @@ function MessageBubble({
   message: OnsiteStreamMessage;
   onRerun?: (hint: string) => void;
 }) {
+  const isUser = message.kind === 'text' && message.role === 'user';
+  const isAssistant = message.kind === 'text' && message.role === 'assistant';
+  const isTool = message.kind === 'tool_use' || message.kind === 'tool_result';
+
   const baseCls = useMemo(() => {
-    if (message.kind === 'text' && message.role === 'user') {
-      return 'ml-auto max-w-[80%] rounded-2xl bg-blue-500 px-3 py-2 text-sm text-white shadow-sm';
-    }
-    if (message.kind === 'text' && message.role === 'assistant') {
-      return 'mr-auto max-w-[80%] whitespace-pre-wrap text-sm text-foreground';
-    }
-    // tool
+    if (isUser) return 'ml-auto max-w-[80%] rounded-2xl bg-blue-500 px-3 py-2 text-sm text-white shadow-sm';
+    if (isAssistant) return 'mr-auto max-w-[80%] whitespace-pre-wrap text-sm text-foreground';
     return 'ml-6 mr-6 rounded-md bg-muted/50 px-2 py-1 font-mono text-[11px] text-muted-foreground';
-  }, [message]);
+  }, [isUser, isAssistant]);
+
+  // msg-role 行(REQ-4.6):用户「现场反馈」/AI「Claude · 取证顺序:日志 → 源码 → DB」
+  const roleLabel = isUser ? '现场反馈' : isAssistant ? 'Claude · 取证顺序:日志 → 源码 → DB' : null;
 
   return (
     <div
       data-testid={`onsite-msg-${message.role}-${message.kind}`}
-      className={cn('flex flex-col', message.role === 'user' ? 'items-end' : 'items-start')}
-    >
-      {message.kind === 'text' && message.role === 'assistant' ? (
-        <div className={baseCls}>
-          <CardRenderer text={message.text} {...(onRerun ? { onRerun } : {})} />
-        </div>
-      ) : (
-        <div className={baseCls}>{message.text}</div>
+      className={cn(
+        'flex gap-2',
+        isUser ? 'flex-row-reverse self-end' : 'self-start',
       )}
+    >
+      {/* 头像(REQ-4.5):用户「我」灰底右对齐 / AI「C」Claude 橙底左对齐 */}
+      <div
+        data-testid={`onsite-avatar-${isUser ? 'user' : isAssistant ? 'ai' : 'tool'}`}
+        className={cn(
+          'flex h-[30px] w-[30px] flex-shrink-0 select-none items-center justify-center rounded-lg text-xs font-bold',
+          isUser && 'bg-secondary text-foreground',
+          isAssistant && 'bg-[hsl(14_55%_55%)] text-white',
+          isTool && 'bg-muted text-muted-foreground',
+        )}
+      >
+        {isUser ? '我' : isAssistant ? 'C' : '·'}
+      </div>
+
+      <div className={cn('flex min-w-0 flex-col', isUser ? 'items-end' : 'items-start')}>
+        {roleLabel && (
+          <span
+            data-testid="onsite-msg-role"
+            className={cn(
+              'mb-1 text-xs font-semibold text-muted-foreground',
+              isUser && 'text-right',
+            )}
+          >
+            {roleLabel}
+          </span>
+        )}
+        {isAssistant ? (
+          <div className={baseCls}>
+            <CardRenderer text={message.text} {...(onRerun ? { onRerun } : {})} />
+          </div>
+        ) : (
+          <div className={baseCls}>{message.text}</div>
+        )}
+      </div>
     </div>
   );
 }
