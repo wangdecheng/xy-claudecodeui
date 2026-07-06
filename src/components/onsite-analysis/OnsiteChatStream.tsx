@@ -310,15 +310,10 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
         data-testid="onsite-chat-scroll"
         className="flex-1 space-y-2 overflow-y-auto px-4 py-3"
       >
-        {messages.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-xs text-muted-foreground">
-            {t('onsite:common.empty', { defaultValue: 'No messages yet' })}
-          </div>
-        ) : (
+        {messages.length > 0 &&
           messages.map((m) => (
             <MessageBubble key={m.id} message={m} onRerun={insertIntoDraft} />
-          ))
-        )}
+          ))}
       </div>
 
       <footer className="flex flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
@@ -355,7 +350,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={onKeyDown}
-            placeholder="输入消息… (Enter 发送 / Shift+Enter 换行)"
+            placeholder="补充信息、粘贴日志片段,或让 Claude 继续下一步取证…"
             rows={2}
             className="flex-1 resize-none rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
           />
