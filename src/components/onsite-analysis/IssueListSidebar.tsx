@@ -28,6 +28,7 @@ const VISIBLE_GROUPS: { status: ProblemStatus; key: string }[] = [
   { status: 'analyzing', key: 'analyzing' },
   { status: 'pending_info', key: 'pending_info' },
   { status: 'confirmed', key: 'confirmed' },
+  { status: 'abandoned', key: 'abandoned' },
 ];
 
 export interface IssueListSidebarProps {

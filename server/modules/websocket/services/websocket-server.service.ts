@@ -64,11 +64,13 @@ export function createWebSocketServer(
       return;
     }
 
-    // /onsite/ws is handled by onsiteWebSocketService (registered on the
-    // same wss at server/index.js startup). Returning here keeps the
-    // connection alive for the hello-frame handler and suppresses the
-    // [WARN] Unknown WebSocket path log below.
+    // /onsite/ws 复用 chat 协议：onsiteWebSocketService(在 server/index.js 启动时
+    // 挂到同一个 wss)负责校验 hello 帧并把 ws.kind 标记为 'onsite';这里再挂上
+    // handleChatConnection 处理 hello 之后的 chat.send / chat.abort 等帧,现场消息
+    // 才能真正走到 Claude。缺了这一步 onsite 消息发到服务端就断了(卡片死电路根因)。
+    // 仅 onsite 分支新增,chat 路径(/ws)不受影响。
     if (pathname === '/onsite/ws') {
+      handleChatConnection(ws, incomingRequest, dependencies.chat);
       return;
     }
 

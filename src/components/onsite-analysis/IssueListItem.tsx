@@ -91,9 +91,21 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
         📁 {shortName}
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-        <div className="flex gap-1">
+        <div className="flex flex-wrap gap-1">
           <span className="rounded bg-muted px-1.5 py-0.5">{problem.iteration}</span>
-          <span className="rounded bg-muted px-1.5 py-0.5">{problem.database}</span>
+          {problem.status === 'pending_info' && !problem.database ? (
+            <span
+              data-testid="onsite-issue-missing-chip"
+              className="rounded border border-amber-400/50 bg-amber-100/60 px-1.5 py-0.5 text-amber-800 dark:border-amber-600/50 dark:bg-amber-900/20 dark:text-amber-200"
+            >
+              缺：数据库类型
+            </span>
+          ) : (
+            problem.database && <span className="rounded bg-muted px-1.5 py-0.5">{problem.database}</span>
+          )}
+          {problem.third_bridge_branch && (
+            <span className="rounded bg-muted px-1.5 py-0.5">{problem.third_bridge_branch}</span>
+          )}
         </div>
         <span>{relative}</span>
       </div>

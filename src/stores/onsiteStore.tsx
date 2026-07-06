@@ -28,6 +28,7 @@ import { authenticatedFetch } from '../utils/api';
 
 import type {
   ConfigPayload,
+  OnsiteFile,
   ProblemListItem,
   ProblemRecord,
   ProblemStatus,
@@ -40,6 +41,8 @@ export interface OnsiteStoreState {
   currentProblemId: string | null;
   /** Progress 0..100 keyed by problemId; missing key = idle. */
   uploading: Record<string, number>;
+  /** Uploaded/extracted files keyed by problemId; from GET /problems/:id/files. */
+  files: Record<string, OnsiteFile[]>;
   lastError: string | null;
   lastFetchedAt: number;
 }
@@ -63,6 +66,8 @@ export interface OnsiteStoreActions {
    * per-file results array.
    */
   uploadFiles: (id: string, files: File[]) => Promise<UploadResult[]>;
+  /** GET /api/onsite/problems/:id/files and cache in `files[id]`. */
+  loadFiles: (id: string) => Promise<OnsiteFile[]>;
 }
 
 export interface OnsiteStoreSelectors {
@@ -72,6 +77,8 @@ export interface OnsiteStoreSelectors {
   getUploadProgress: (id: string) => number;
   /** True iff any problem currently has uploading[id] defined. */
   getAnyUploading: () => boolean;
+  /** Uploaded/extracted files for one problem (empty array if none loaded). */
+  getFiles: (id: string | null) => OnsiteFile[];
 }
 
 export type OnsiteStore = OnsiteStoreState & OnsiteStoreActions & OnsiteStoreSelectors;
@@ -81,6 +88,7 @@ const INITIAL_STATE: OnsiteStoreState = {
   config: null,
   currentProblemId: null,
   uploading: {},
+  files: {},
   lastError: null,
   lastFetchedAt: 0,
 };
@@ -89,7 +97,10 @@ const INITIAL_STATE: OnsiteStoreState = {
 
 export function useOnsiteStore(): OnsiteStore {
   const stateRef = useRef<OnsiteStoreState>({ ...INITIAL_STATE });
-  const [, setTick] = useState(0);
+  // `tick` 必须被 useMemo 依赖读取：notify() 递增 tick 触发重渲染后,只有把
+  // tick 放进下方 useMemo 的依赖数组,快照才会重新从 stateRef 派生。否则
+  // useMemo 依赖全是稳定引用,会一直返回首帧的空快照(problems 永远为 [])。
+  const [tick, setTick] = useState(0);
   const notify = useCallback(() => setTick((n) => n + 1), []);
 
   /** Read snapshot — callers must have already called `notify()` upstream. */
@@ -247,6 +258,33 @@ export function useOnsiteStore(): OnsiteStore {
     [notify],
   );
 
+  const loadFiles = useCallback(
+    async (id: string): Promise<OnsiteFile[]> => {
+      try {
+        const res = await authenticatedFetch(
+          `/api/onsite/problems/${encodeURIComponent(id)}/files`,
+        );
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          stateRef.current.lastError = `loadFiles failed: HTTP ${res.status} ${text}`;
+          notify();
+          return stateRef.current.files[id] ?? [];
+        }
+        const body = (await res.json()) as { files?: OnsiteFile[] };
+        const list = Array.isArray(body.files) ? body.files : [];
+        stateRef.current.files = { ...stateRef.current.files, [id]: list };
+        stateRef.current.lastError = null;
+        notify();
+        return list;
+      } catch (err: unknown) {
+        stateRef.current.lastError = err instanceof Error ? err.message : String(err);
+        notify();
+        return stateRef.current.files[id] ?? [];
+      }
+    },
+    [notify],
+  );
+
   // ─── selectors (snapshot reads) ────────────────────────────────────────
 
   /** getProblem — returns the matching record or undefined. */
@@ -267,6 +305,11 @@ export function useOnsiteStore(): OnsiteStore {
     return Object.keys(stateRef.current.uploading).length > 0;
   }, []);
 
+  const getFiles = useCallback((id: string | null): OnsiteFile[] => {
+    if (!id) return [];
+    return stateRef.current.files[id] ?? [];
+  }, []);
+
   // ─── exposed surface ──────────────────────────────────────────────────
   // We re-derive the `problems` / `config` / `uploading` snapshots from the
   // ref on every render (which is exactly what `useTick` triggers). This is
@@ -278,6 +321,7 @@ export function useOnsiteStore(): OnsiteStore {
       config: state.config,
       currentProblemId: state.currentProblemId,
       uploading: state.uploading,
+      files: state.files,
       lastError: state.lastError,
       lastFetchedAt: state.lastFetchedAt,
       loadConfig,
@@ -285,20 +329,25 @@ export function useOnsiteStore(): OnsiteStore {
       selectProblem,
       patchStatus,
       uploadFiles,
+      loadFiles,
       getProblem,
       getUploadProgress,
       getAnyUploading,
+      getFiles,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- intentional: we re-read stateRef on every tick
   }, [
+    tick,
     read,
     loadConfig,
     loadProblems,
     selectProblem,
     patchStatus,
     uploadFiles,
+    loadFiles,
     getProblem,
     getUploadProgress,
     getAnyUploading,
+    getFiles,
   ]);
 }

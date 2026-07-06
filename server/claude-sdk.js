@@ -150,9 +150,24 @@ function matchesToolPermission(entry, toolName, input) {
  * @param {Object} options - CLI options
  * @returns {Object} SDK-compatible options
  */
+const ONSITE_CARD_DSL = [
+  '',
+  '## 现场问题分析 · 结构化输出约定（仅本工作台生效）',
+  '',
+  '你正在「客户现场问题分析」工作台里排查。给出**结构化结论**时，用下面的卡片标签包裹，前端会渲染成卡片；普通思考/说明仍用正常文本，不要包卡片。',
+  '',
+  '卡片文法：`<card type="TYPE" title="标题" reason="一句话原因（仅 blocked 用）">正文</card>`，TYPE 取值：',
+  '- `evidence`：取证过程。正文放**原始命令与每个目录的命中计数**（如 `grep -rc "<traceId>" pod-1/ pod-2/`，逐行 `路径: 计数`）。',
+  '- `blocked`：证据不足时的阻塞清单。正文**每行一条**、一次只列**最关键的一条**待补信息并写清怎么补；`reason` 属性放一句话说明。',
+  '- `root_cause`：已被证据钉死的根因（正文不得含“可能/也许/似乎”等软化词）。',
+  '- `sql`：给现场的方言化 SQL（按当前问题的数据库类型）。',
+  '',
+  '铁律：traceId 在全部候选目录命中为 0 时，必须出 `blocked` 卡片、**禁止**输出任何“可能是 X”的推断；证据钉死前不给 `root_cause`。',
+  '',
+].join('\n');
+
 function mapCliOptionsToSDK(options = {}) {
   const { sessionId, cwd, toolsSettings, permissionMode } = options;
-
   const sdkOptions = {};
 
   // Forward all host env vars (e.g. ANTHROPIC_BASE_URL) to the subprocess.
@@ -215,7 +230,10 @@ function mapCliOptionsToSDK(options = {}) {
   // Map system prompt configuration
   sdkOptions.systemPrompt = {
     type: 'preset',
-    preset: 'claude_code'  // Required to use CLAUDE.md
+    preset: 'claude_code',  // Required to use CLAUDE.md
+    // Onsite-only: teach the structured-card DSL + 现场纪律 output conventions.
+    // chat 路径不传 options.onsite → 不注入 append,行为零变化。
+    ...(options.onsite ? { append: ONSITE_CARD_DSL } : {})
   };
 
   // Map setting sources for CLAUDE.md loading
@@ -891,5 +909,8 @@ export {
   getActiveClaudeSDKSessions,
   resolveToolApproval,
   getPendingApprovalsForSession,
-  reconnectSessionWriter
+  reconnectSessionWriter,
+  // Exported for unit testing the onsite-only system-prompt append (Tier2).
+  mapCliOptionsToSDK,
+  ONSITE_CARD_DSL
 };

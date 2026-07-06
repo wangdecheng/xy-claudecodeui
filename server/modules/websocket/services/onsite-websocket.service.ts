@@ -23,6 +23,8 @@ import type { WebSocket, WebSocketServer } from 'ws';
 
 import { assertCwdUnderRoot, resolveOnsiteRoot } from '@/modules/onsite-analysis/problem.service.js';
 import { messagesStore, type StoredMessage } from '@/modules/onsite-analysis/messages-store.service.js';
+import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -112,6 +114,31 @@ type HelloContext = {
   /** userId (string | null) from hello frame. */
   userId: string | null;
 };
+
+/**
+ * 幂等地确保某个 onsite problem 的 session 行存在(kind='onsite')。
+ * chat.send 用 sessionId=problemId 查 sessionsDb;缺行则 SESSION_NOT_FOUND。
+ * 元数据(branch/iteration/database)从 onsite_problems 表补齐,取不到就留空/NULL
+ * (denormalized 副本,不影响 spawn — spawn 只用 project_path/cwd)。全同步,无竞态。
+ */
+function ensureOnsiteSession(problemId: string, cwd: string): void {
+  try {
+    if (sessionsDb.getSessionById(problemId)) return;
+    const rec = onsiteProblemsDb.findById(problemId);
+    sessionsDb.createOnsiteSession(problemId, 'claude', cwd, {
+      cwd,
+      third_bridge_branch: rec?.third_bridge_branch ?? null,
+      iteration: rec?.iteration ?? '',
+      database: rec?.database ?? '',
+    });
+  } catch (err: unknown) {
+    // 并发/重连下可能已被另一帧创建;不阻断连接,chat.send 会再次校验。
+    console.warn(
+      '[onsite-ws] ensureOnsiteSession failed:',
+      err instanceof Error ? err.message : String(err),
+    );
+  }
+}
 
 /**
  * 把 hello 上下文写到 ws 上,供 discipline 中间件在 send 拦截时取用。
@@ -216,6 +243,11 @@ export const onsiteWebSocketService = {
             cwd: validation.payload.cwd,
             userId: validation.payload.userId,
           });
+
+          // hello 验证通过后,确保该 problem 对应的 onsite session 行存在。
+          // 否则后续 chat.send(sessionId=problemId)会因 SESSION_NOT_FOUND 静默失败
+          // (卡片死电路的第三处根因:onsite 会话从未被创建)。同步、幂等。
+          ensureOnsiteSession(validation.payload.problemId, validation.payload.cwd);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           sendProtocolError('HELLO_INTERNAL', message);

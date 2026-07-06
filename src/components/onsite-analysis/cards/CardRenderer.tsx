@@ -66,21 +66,45 @@ export function parseAiText(text: string): Segment[] {
   return segments;
 }
 
+function renderSofteningText(text: string, keyPrefix: string) {
+  return splitSoftening(text).map((seg, i) =>
+    seg.soft ? (
+      <SofteningTag key={`${keyPrefix}-${i}`} word={seg.text} />
+    ) : (
+      <span key={`${keyPrefix}-${i}`}>{seg.text}</span>
+    ),
+  );
+}
+
+/**
+ * Plain assistant text renderer: splits on ``` fenced code blocks so log/SQL
+ * output is readable as monospace, and keeps softening-word highlighting on the
+ * non-fenced prose. Dependency-free (no react-markdown / PaletteOps context).
+ */
 function renderText(text: string, keyPrefix: string) {
+  const segments = text.split(/```/);
   return (
     <span key={keyPrefix}>
-      {splitSoftening(text).map((seg, i) =>
-        seg.soft ? (
-          <SofteningTag key={`${keyPrefix}-${i}`} word={seg.text} />
-        ) : (
-          <span key={`${keyPrefix}-${i}`}>{seg.text}</span>
-        ),
-      )}
+      {segments.map((seg, i) => {
+        // odd indices are inside a fenced block
+        if (i % 2 === 1) {
+          const body = seg.replace(/^[^\n]*\n/, ''); // drop the language line
+          return (
+            <pre
+              key={`${keyPrefix}-code-${i}`}
+              className="my-1 overflow-x-auto whitespace-pre rounded bg-black/5 p-2 font-mono text-[11px] leading-relaxed dark:bg-black/30"
+            >
+              {body || seg}
+            </pre>
+          );
+        }
+        return <Fragment key={`${keyPrefix}-txt-${i}`}>{renderSofteningText(seg, `${keyPrefix}-${i}`)}</Fragment>;
+      })}
     </span>
   );
 }
 
-function renderCard(seg: Segment, key: string) {
+function renderCard(seg: Segment, key: string, onRerun?: (hint: string) => void) {
   const title = seg.attrs.title;
   switch (seg.cardType) {
     case 'evidence':
@@ -91,6 +115,8 @@ function renderCard(seg: Segment, key: string) {
           key={key}
           {...(title ? { title } : {})}
           {...(seg.attrs.reason ? { reason: seg.attrs.reason } : {})}
+          body={seg.text}
+          {...(onRerun ? { onRerun } : {})}
         />
       );
     case 'root_cause':
@@ -106,15 +132,16 @@ function renderCard(seg: Segment, key: string) {
 
 export interface CardRendererProps {
   text: string;
+  onRerun?: (hint: string) => void;
 }
 
-export default function CardRenderer({ text }: CardRendererProps) {
+export default function CardRenderer({ text, onRerun }: CardRendererProps) {
   const segments = parseAiText(text);
   return (
     <>
       {segments.map((seg, i) => {
         const key = `seg-${i}`;
-        if (seg.kind === 'card') return renderCard(seg, key);
+        if (seg.kind === 'card') return renderCard(seg, key, onRerun);
         return <Fragment key={key}>{renderText(seg.text, key)}</Fragment>;
       })}
     </>

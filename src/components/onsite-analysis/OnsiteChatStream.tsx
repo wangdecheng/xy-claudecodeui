@@ -23,16 +23,19 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Send, StopCircle } from 'lucide-react';
+import { Database, Paperclip, Send, StopCircle } from 'lucide-react';
 
 import type { OnsiteChatFrame, ProblemRecord } from '@shared/onsite-types';
 
 import { cn } from '../../lib/utils';
 import { useOnsiteStore } from '../../stores/onsiteStore';
 import { useOnsiteWebSocket } from '../../contexts/OnsiteWebSocketContext';
+import AnalysisFilesRow from './AnalysisFilesRow';
+import AnalysisInfoChips from './AnalysisInfoChips';
 import CardRenderer from './cards/CardRenderer';
 import CwdLockView from './CwdLockView';
 import DisciplineCounter from './DisciplineCounter';
+import { sqlTemplateFor } from './sqlTemplates';
 import StatusBadge from './StatusBadge';
 
 // ─── Stream message model ────────────────────────────────────────────────
@@ -69,12 +72,15 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const store = useOnsiteStore();
   const getProblem = store.getProblem;
   const loadProblems = store.loadProblems;
+  const loadFiles = store.loadFiles;
+  const uploadFiles = store.uploadFiles;
   const setHelloContext = useOnsiteWebSocket().setHelloContext;
   const send = useOnsiteWebSocket().send;
   const subscribe = useOnsiteWebSocket().subscribe;
   const isConnected = useOnsiteWebSocket().isConnected;
 
   const problem: ProblemRecord | undefined = getProblem(problemId);
+  const files = store.getFiles(problemId);
 
   const [messages, setMessages] = useState<OnsiteStreamMessage[]>([]);
   const [draft, setDraft] = useState('');
@@ -85,6 +91,8 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     log: [],
   });
   const scrollRef = useRef<HTMLDivElement | null>(null);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   // ─── effects ────────────────────────────────────────────────────────
 
@@ -92,6 +100,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   useEffect(() => {
     void loadProblems();
   }, [loadProblems]);
+
+  // Load uploaded/extracted files for the header files-row on problem switch.
+  useEffect(() => {
+    if (problemId) void loadFiles(problemId);
+  }, [problemId, loadFiles]);
 
   useEffect(() => {
     if (problem) {
@@ -222,6 +235,23 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     send({ type: 'chat.abort', sessionId: problemId });
   };
 
+  // Insert text into the composer draft and focus it (used by SQL template
+  // button and card "补日志重跑" action).
+  const insertIntoDraft = (text: string) => {
+    setDraft((cur) => (cur.trim() ? `${cur}\n${text}` : text));
+    // focus after state flush
+    setTimeout(() => textareaRef.current?.focus(), 0);
+  };
+
+  const onPickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const picked = e.target.files ? Array.from(e.target.files) : [];
+    // reset input so the same file can be re-picked later
+    e.target.value = '';
+    if (picked.length === 0) return;
+    await uploadFiles(problemId, picked);
+    await loadFiles(problemId);
+  };
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
@@ -245,27 +275,34 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     <div data-testid="onsite-chat-stream" className="flex h-full flex-col">
       <header
         data-testid="onsite-chat-header"
-        className="flex flex-wrap items-center gap-2 border-b border-border bg-card/50 px-4 py-2"
+        className="flex flex-col gap-2 border-b border-border bg-card/50 px-4 py-2"
       >
-        <CwdLockView cwd={problem.cwd} />
-        <StatusBadge status={problem.status} />
-        <div className="ml-auto flex items-center gap-2">
-          <span
-            className={cn(
-              'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]',
-              isConnected ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
-            )}
-            data-testid="onsite-ws-status"
-          >
-            <span className={cn('h-1.5 w-1.5 rounded-full', isConnected ? 'bg-green-500' : 'bg-gray-400')} />
-            {isConnected ? 'connected' : 'offline'}
+        <div className="flex flex-wrap items-center gap-2">
+          <span data-testid="onsite-chat-title" className="text-sm font-semibold text-foreground">
+            {problem.customer} · 现场问题
           </span>
-          <DisciplineCounter
-            softening={discipline.softening}
-            writeOriginalLog={discipline.writeOriginalLog}
-            log={discipline.log}
-          />
+          <StatusBadge status={problem.status} />
+          <div className="ml-auto flex items-center gap-2">
+            <CwdLockView cwd={problem.cwd} />
+            <span
+              className={cn(
+                'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px]',
+                isConnected ? 'bg-green-100 text-green-800 dark:bg-green-900/40 dark:text-green-200' : 'bg-gray-100 text-gray-600 dark:bg-gray-800 dark:text-gray-400',
+              )}
+              data-testid="onsite-ws-status"
+            >
+              <span className={cn('h-1.5 w-1.5 rounded-full', isConnected ? 'bg-green-500' : 'bg-gray-400')} />
+              {isConnected ? 'connected' : 'offline'}
+            </span>
+            <DisciplineCounter
+              softening={discipline.softening}
+              writeOriginalLog={discipline.writeOriginalLog}
+              log={discipline.log}
+            />
+          </div>
         </div>
+        <AnalysisInfoChips problem={problem} />
+        <AnalysisFilesRow files={files} />
       </header>
 
       <div
@@ -278,13 +315,42 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             {t('onsite:common.empty', { defaultValue: 'No messages yet' })}
           </div>
         ) : (
-          messages.map((m) => <MessageBubble key={m.id} message={m} />)
+          messages.map((m) => (
+            <MessageBubble key={m.id} message={m} onRerun={insertIntoDraft} />
+          ))
         )}
       </div>
 
       <footer className="border-t border-border bg-card/50 px-4 py-2">
+        <input
+          ref={fileInputRef}
+          type="file"
+          multiple
+          hidden
+          data-testid="onsite-chat-file-input"
+          onChange={onPickFiles}
+        />
         <div className="flex items-end gap-2">
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            title="上传日志包"
+            data-testid="onsite-chat-upload"
+            className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-muted"
+          >
+            <Paperclip className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => insertIntoDraft(sqlTemplateFor(problem.database))}
+            title="插入 SQL 模板"
+            data-testid="onsite-chat-sql-template"
+            className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-muted"
+          >
+            <Database className="h-4 w-4" />
+          </button>
           <textarea
+            ref={textareaRef}
             data-testid="onsite-chat-input"
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
@@ -319,7 +385,13 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   );
 }
 
-function MessageBubble({ message }: { message: OnsiteStreamMessage }) {
+function MessageBubble({
+  message,
+  onRerun,
+}: {
+  message: OnsiteStreamMessage;
+  onRerun?: (hint: string) => void;
+}) {
   const baseCls = useMemo(() => {
     if (message.kind === 'text' && message.role === 'user') {
       return 'ml-auto max-w-[80%] rounded-2xl bg-blue-500 px-3 py-2 text-sm text-white shadow-sm';
@@ -338,7 +410,7 @@ function MessageBubble({ message }: { message: OnsiteStreamMessage }) {
     >
       {message.kind === 'text' && message.role === 'assistant' ? (
         <div className={baseCls}>
-          <CardRenderer text={message.text} />
+          <CardRenderer text={message.text} {...(onRerun ? { onRerun } : {})} />
         </div>
       ) : (
         <div className={baseCls}>{message.text}</div>

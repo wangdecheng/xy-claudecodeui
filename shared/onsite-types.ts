@@ -84,6 +84,8 @@ export interface OnsiteFile {
   original_name: string;
   size: number;
   kind: OnsiteFileKind;
+  /** Absolute path where the uploaded archive is stored (server row field). */
+  stored_path?: string;
   unpacked_dir?: string;
   uploaded_at: string;
 }

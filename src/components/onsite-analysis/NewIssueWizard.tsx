@@ -136,18 +136,26 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
         onSubmit={handleSubmit}
         className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-border bg-card p-5 shadow-xl"
       >
-        <header className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-foreground">
-            {t('onsite:wizard.title')}
-          </h2>
-          <button
-            type="button"
-            onClick={onClose}
-            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
-            aria-label={t('onsite:common.back', { defaultValue: 'close' })}
+        <header className="flex flex-col gap-1">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-foreground">
+              {t('onsite:wizard.title')}
+            </h2>
+            <button
+              type="button"
+              onClick={onClose}
+              className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+              aria-label={t('onsite:common.back', { defaultValue: 'close' })}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <p
+            data-testid="onsite-wizard-subtitle"
+            className="text-xs leading-relaxed text-muted-foreground"
           >
-            <X className="h-4 w-4" />
-          </button>
+            {t('onsite:wizard.subtitle')}
+          </p>
         </header>
 
         <div className="flex flex-col gap-1">

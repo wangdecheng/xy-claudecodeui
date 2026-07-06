@@ -146,6 +146,13 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
         />
       </div>
 
+      <p
+        data-testid="onsite-dz-note"
+        className="rounded-md border border-amber-400/50 bg-amber-50 px-2 py-1.5 text-[11px] leading-relaxed text-amber-900 dark:border-amber-600/50 dark:bg-amber-900/20 dark:text-amber-200"
+      >
+        {t('onsite:wizard.dzNote')}
+      </p>
+
       {uploading && (
         <div data-testid="onsite-upload-progress" className="flex flex-col gap-1">
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">

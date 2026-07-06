@@ -140,6 +140,10 @@ async function handleChatSend(
     providerSessionId: session.provider_session_id,
     connection: ws,
     userId,
+    // onsite 运行(ws 被 onsite-websocket.service 标记)传 kind:'onsite',
+    // 让 chatRunRegistry 挂上现场纪律中间件(软化词/写保护/trace-id);
+    // chat 省略 → 默认 'chat' → chat 路径零行为变化。
+    ...((ws as WebSocket & { kind?: string }).kind === 'onsite' ? { kind: 'onsite' as const } : {}),
   });
 
   if (!run) {
@@ -165,6 +169,10 @@ async function handleChatSend(
     resume: Boolean(session.provider_session_id),
     cwd: clientOptions.cwd ?? session.project_path ?? undefined,
     projectPath: session.project_path ?? clientOptions.projectPath,
+    // Onsite runs (ws tagged by onsite-websocket.service) opt into the
+    // structured-card DSL system-prompt append in claude-sdk. chat leaves this
+    // undefined → zero behavior change on the chat path.
+    ...((ws as WebSocket & { kind?: string }).kind === 'onsite' ? { onsite: true } : {}),
   };
 
   try {
@@ -338,6 +346,14 @@ export function handleChatConnection(
 
       const data = parsed as AnyRecord;
       const messageType = typeof data.type === 'string' ? data.type : '';
+
+      // onsite hello 帧(kind:'onsite'、无 type)由 onsiteWebSocketService 的
+      // 校验器消费;因为两个 listener 挂在同一个 ws 上,它也会到达这个共享
+      // handler。这里静默忽略,避免误判成 UNKNOWN_MESSAGE_TYPE。chat 客户端
+      // 从不发 kind:'onsite',故对 chat 路径零影响。
+      if (!messageType && data.kind === 'onsite') {
+        return;
+      }
 
       switch (messageType) {
         case 'chat.send':
