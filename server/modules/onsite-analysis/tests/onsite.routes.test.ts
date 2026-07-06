@@ -119,6 +119,7 @@ test('GET /api/onsite/problems 返 200 + 数组,排序 blocked→analyzing→pen
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: root + '/a-test',
+      description: '测试用例占位描述',
     });
     await problemService.create({
       customer: 'b-test',
@@ -126,6 +127,7 @@ test('GET /api/onsite/problems 返 200 + 数组,排序 blocked→analyzing→pen
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: root + '/b-test',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -169,6 +171,7 @@ test('POST customer label 不在 config 返 422', async () => {
         iteration: 'master_5.2_3.2',
         database: 'db01',
         cwd: process.env.ONSITE_ROOT + '/未知客户',
+        description: 'test placeholder description',
       });
 
     assert.equal(response.status, 422);
@@ -187,11 +190,51 @@ test('POST 合法 body 返 201 + problem.json 落盘 + cwd 在 ONSITE_ROOT 下',
         iteration: 'master_5.2_3.2',
         database: 'db01',
         cwd: process.env.ONSITE_ROOT + '/山西公安',
+        description: '客户反馈登录失败,traceId=abc123',
       });
 
     assert.equal(response.status, 201);
     assert.ok(response.body.id);
     assert.ok(response.body.id.startsWith(todayYyyymmdd()));
+  });
+});
+
+test('POST 缺 description 返 400 + MISSING_FIELDS', async () => {
+  await withIsolatedEnv(async () => {
+    const app = buildApp();
+    const response = await request(app)
+      .post('/api/onsite/problems')
+      .send({
+        customer: '山西公安',
+        third_bridge_branch: 'master_5.2_3.2',
+        iteration: 'master_5.2_3.2',
+        database: 'db01',
+        cwd: process.env.ONSITE_ROOT + '/山西公安',
+      });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, 'MISSING_FIELDS');
+    assert.ok(response.body.fields.includes('description'));
+  });
+});
+
+test('POST description 是空白字符返 400 + MISSING_FIELDS', async () => {
+  await withIsolatedEnv(async () => {
+    const app = buildApp();
+    const response = await request(app)
+      .post('/api/onsite/problems')
+      .send({
+        customer: '山西公安',
+        third_bridge_branch: 'master_5.2_3.2',
+        iteration: 'master_5.2_3.2',
+        database: 'db01',
+        cwd: process.env.ONSITE_ROOT + '/山西公安',
+        description: '   \n\t  ',
+      });
+
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error, 'MISSING_FIELDS');
+    assert.ok(response.body.fields.includes('description'));
   });
 });
 
@@ -205,6 +248,7 @@ test('POST cwd 越界(/etc) 返 409', async () => {
         iteration: 'master_5.2_3.2',
         database: 'db01',
         cwd: '/etc',
+        description: 'test placeholder description',
       });
 
     assert.equal(response.status, 409);
@@ -225,6 +269,7 @@ test('GET /api/onsite/problems/:id 返 200 + record', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -259,6 +304,7 @@ test('PATCH 缺 reason 返 400', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -280,6 +326,7 @@ test('PATCH reason < 8 字符返 400', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -301,6 +348,7 @@ test('PATCH 非法状态迁移返 409 + allowed', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -323,6 +371,7 @@ test('PATCH 合法迁移返 200 + audit 行落库', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -351,6 +400,7 @@ test('PATCH 成功后 broadcast 触发 state-changed', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const received: Array<{ type: string; payload?: unknown }> = [];
@@ -386,6 +436,7 @@ test('GET /api/onsite/problems/:id/files 返 200 + file 数组', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     onsiteFilesDb.insert({

@@ -34,6 +34,7 @@ import {
 import { onsiteBroadcast } from './onsite-broadcast.js';
 import {
   CwdEscapeError,
+  DescriptionRequiredError,
   ProblemRecord,
   problemService,
   sanitizeCustomerLabel,
@@ -132,6 +133,7 @@ type CreateBody = {
   iteration?: unknown;
   database?: unknown;
   cwd?: unknown;
+  description?: unknown;
 };
 
 router.post('/problems', (req: Request, res: Response) => {
@@ -143,6 +145,9 @@ router.post('/problems', (req: Request, res: Response) => {
   if (typeof body.iteration !== 'string' || body.iteration.length === 0) missing.push('iteration');
   if (typeof body.database !== 'string' || body.database.length === 0) missing.push('database');
   if (typeof body.cwd !== 'string' || body.cwd.length === 0) missing.push('cwd');
+  if (typeof body.description !== 'string' || body.description.trim().length === 0) {
+    missing.push('description');
+  }
 
   if (missing.length > 0) {
     return res.status(400).json({
@@ -156,6 +161,7 @@ router.post('/problems', (req: Request, res: Response) => {
   const iteration = body.iteration as string;
   const database = body.database as string;
   const cwd = body.cwd as string;
+  const description = (body.description as string).trim();
   const thirdBridgeBranch =
     typeof body.third_bridge_branch === 'string' && body.third_bridge_branch.length > 0
       ? (body.third_bridge_branch as string)
@@ -187,6 +193,7 @@ router.post('/problems', (req: Request, res: Response) => {
       iteration,
       database,
       cwd,
+      description,
     })
     .then((record: ProblemRecord) => {
       res.status(201).json(record);
@@ -198,6 +205,12 @@ router.post('/problems', (req: Request, res: Response) => {
           message: err.message,
           cwd: err.cwd,
           root: err.root,
+        });
+      }
+      if (err instanceof DescriptionRequiredError) {
+        return res.status(400).json({
+          error: err.code,
+          message: err.message,
         });
       }
       const message = err instanceof Error ? err.message : 'create failed';

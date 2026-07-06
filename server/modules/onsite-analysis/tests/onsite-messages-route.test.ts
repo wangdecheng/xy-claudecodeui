@@ -100,6 +100,7 @@ test('GET /api/onsite/problems/:id/messages 返 200 + 空数组(无消息)', asy
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT! + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     const app = buildApp();
@@ -123,6 +124,7 @@ test('GET /api/onsite/problems/:id/messages 返 200 + 已写入的消息(正序)
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT! + '/山西公安',
+      description: '测试用例占位描述',
     });
 
     // 手动 append 3 条(模拟 onsite WS 包 send 已写)
