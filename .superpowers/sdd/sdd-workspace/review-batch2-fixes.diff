@@ -1,0 +1,408 @@
+# Review package: 6fbda6d..fe49a01cfdbb76bc76cd7ac3a1feca9a5a7621b1
+
+## Commits
+fe49a01 test(onsite): 同日同客户重复测试改为真正驱动 nextAvailableDirName dedup 路径
+4d4f687 fix(onsite): wire process.exit(1) on MigrationCorruptionError via discriminated helper
+
+## Files changed
+ server/index.js                                    |  16 ++-
+ server/modules/database/index.ts                   |   4 +
+ server/modules/database/init-helpers.ts            |  97 ++++++++++++++++
+ server/modules/database/tests/init-helpers.test.ts | 122 +++++++++++++++++++++
+ .../onsite-analysis/tests/problem.service.test.ts  |  41 ++++++-
+ 5 files changed, 273 insertions(+), 7 deletions(-)
+
+## Diff
+diff --git a/server/index.js b/server/index.js
+index 6a48c25..6b567dd 100755
+--- a/server/index.js
++++ b/server/index.js
+@@ -61,21 +61,21 @@ import notificationRoutes from './modules/notifications/notifications.routes.js'
+ import userRoutes from './routes/user.js';
+ import geminiRoutes from './routes/gemini.js';
+ import pluginsRoutes from './routes/plugins.js';
+ import providerRoutes from './modules/providers/provider.routes.js';
+ import voiceRoutes from './voice-proxy.js';
+ import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
+ import onsiteRoutes from './modules/onsite-analysis/onsite.routes.js';
+ import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
+ import { browserUseService } from './modules/browser-use/browser-use.service.js';
+ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
+-import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
++import { initializeDatabase, projectsDb, sessionsDb, handleMigrationCorruption } from './modules/database/index.js';
+ import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
+ import { configureWebPush } from './services/vapid-keys.js';
+ import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+ import { IS_PLATFORM } from './constants/config.js';
+ import { c } from './utils/colors.js';
+ 
+ const __dirname = getModuleDir(import.meta.url);
+ // The server source runs from /server, while the compiled output runs from /dist-server/server.
+ // Resolving the app root once keeps every repo-level lookup below aligned across both layouts.
+ const APP_ROOT = findAppRoot(__dirname);
+@@ -1721,22 +1721,32 @@ async function removeLocalServerMarker() {
+     } catch (error) {
+         if (error.code !== 'ENOENT') {
+             console.warn('[WARN] Could not remove local server marker:', error.message);
+         }
+     }
+ }
+ 
+ // Initialize database and start server
+ async function startServer() {
+     try {
+-        // Initialize authentication database
+-        await initializeDatabase();
++        // Initialize authentication database. A migration-integrity
++        // failure (drift in a recorded SHA, or a missing migration step)
++        // is raised as `MigrationCorruptionError` from `initializeDatabase`.
++        // Hand it to `handleMigrationCorruption` which exits the process
++        // with code 1 — a corrupted DB must never be allowed to serve
++        // requests. Any other init failure is left to bubble up to the
++        // outer catch below.
++        try {
++            await initializeDatabase();
++        } catch (initErr) {
++            handleMigrationCorruption(initErr);
++        }
+ 
+         // Configure Web Push (VAPID keys)
+         configureWebPush();
+ 
+         // Check if running in production mode (dist folder exists)
+         const distIndexPath = path.join(APP_ROOT, 'dist', 'index.html');
+         const isProduction = fs.existsSync(distIndexPath);
+ 
+         // Log Claude implementation mode
+         console.log(`${c.info('[INFO]')} Using Claude Agents SDK for Claude integration`);
+diff --git a/server/modules/database/index.ts b/server/modules/database/index.ts
+index 104e17a..f243647 100644
+--- a/server/modules/database/index.ts
++++ b/server/modules/database/index.ts
+@@ -1,11 +1,15 @@
+ export { initializeDatabase } from '@/modules/database/init-db.js';
++export {
++  handleMigrationCorruption,
++  isMigrationCorruptionError,
++} from '@/modules/database/init-helpers.js';
+ export { closeConnection, getConnection, getDatabasePath } from '@/modules/database/connection.js';
+ export { apiKeysDb } from '@/modules/database/repositories/api-keys.js';
+ export { appConfigDb } from '@/modules/database/repositories/app-config.js';
+ export { credentialsDb } from '@/modules/database/repositories/credentials.js';
+ export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
+ export { notificationChannelEndpointsDb } from '@/modules/database/repositories/notification-channel-endpoints.js';
+ export { notificationPreferencesDb } from '@/modules/database/repositories/notification-preferences.js';
+ export { projectsDb } from '@/modules/database/repositories/projects.db.js';
+ export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscriptions.js';
+ export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';
+diff --git a/server/modules/database/init-helpers.ts b/server/modules/database/init-helpers.ts
+new file mode 100644
+index 0000000..f1422cb
+--- /dev/null
++++ b/server/modules/database/init-helpers.ts
+@@ -0,0 +1,97 @@
++/**
++ * Init wiring helpers — used by `server/index.js` (and any other entrypoint
++ * that drives `initializeDatabase`) to discriminate a migration-integrity
++ * failure from other init failures.
++ *
++ * Background (Batch 2 / C-4 patch):
++ *   The C-4 patch wrapped `runMigrations` in a transaction and added a
++ *   `verifyMigrations` SHA check at the end of `initializeDatabase`. When
++ *   the SHA check fails we throw a `MigrationCorruptionError`.
++ *
++ *   That throw is the integrity alarm — the SQLite DB is no longer
++ *   trustworthy (a recorded SHA drifted, or a step is missing). The brief
++ *   requires that the server process refuses to start in that case
++ *   (`process.exit(1)`) rather than booting up half-broken.
++ *
++ *   Wiring this in the JS startup is awkward because:
++ *     1.  `MigrationCorruptionError` lives in a `.ts` file (the migration
++ *         module) and the importer is `.js`. We want the discrimination to
++ *         be cheap and tolerant, so we accept either `instanceof` matches
++ *         OR a duck-typed `name === 'MigrationCorruptionError'`. The latter
++ *         covers the case where the error was serialized over a process
++ *         boundary or rebuilt from a log line.
++ *     2.  `process.exit(1)` from the wiring point must be opt-in for the
++ *         `MigrationCorruptionError` specifically — generic DB errors
++ *         should still throw so the caller's existing error handler can
++ *         decide what to do (CI/telemetry/sandbox scenarios).
++ *
++ *   These two helpers isolate that logic so it can be unit-tested without
++ *   actually killing the test process.
++ */
++
++import { MigrationCorruptionError } from '@/modules/database/migrations.js';
++
++/**
++ * Detect `MigrationCorruptionError` either by `instanceof` (preferred) or
++ * by duck-typed `name` (fallback for error objects reconstructed from logs
++ * or process boundaries).
++ *
++ * The duck-typed fallback intentionally requires `err instanceof Error` —
++ * that is, the error must have a real `Error` prototype. Otherwise a plain
++ * `{ name: '...' }` object (e.g. from a JSON payload, a config literal,
++ * or a misnamed thrown value) would be misclassified as a corruption event.
++ */
++export function isMigrationCorruptionError(err: unknown): boolean {
++  if (err instanceof MigrationCorruptionError) return true;
++  if (
++    err instanceof Error &&
++    (err as { name?: unknown }).name === 'MigrationCorruptionError'
++  ) {
++    return true;
++  }
++  return false;
++}
++
++/**
++ * Wire this into the startup `try/catch` around `initializeDatabase()`:
++ *
++ *   try {
++ *     await initializeDatabase();
++ *   } catch (err) {
++ *     handleMigrationCorruption(err); // exits(1) on corruption, else re-throws
++ *   }
++ *
++ * Behaviour:
++ *   - MigrationCorruptionError -> log a one-line red-alert message and
++ *     call `exitFn(1)`. The return is `never`; the caller is responsible
++ *     for ensuring the process actually leaves before any request can be
++ *     served (the default `process.exit` satisfies this; tests inject a
++ *     stub so the runner can keep going).
++ *   - Any other thrown value -> re-thrown unchanged so existing error
++ *     paths (CI sandbox, dev tooling, etc.) keep working.
++ *
++ * The `exitFn` argument defaults to `process.exit` for the production
++ * wiring and is overridable in tests. Both function signatures accept any
++ * callable that takes an exit code and doesn't return — we type it as
++ * `(code?: number) => never` so the caller's contract stays honest.
++ */
++export function handleMigrationCorruption(
++  err: unknown,
++  exitFn: (code?: number) => never = process.exit.bind(process) as (
++    code?: number,
++  ) => never,
++): never {
++  if (isMigrationCorruptionError(err)) {
++    const detail =
++      err instanceof MigrationCorruptionError
++        ? `missing=[${err.missing.join(', ')}], corrupt=${JSON.stringify(err.corrupt)}`
++        : '(duck-typed)';
++    // Use console.error so the line is visible in detached supervisors and
++    // systemd journals without depending on a configured logger.
++    console.error(
++      `[FATAL] Migration integrity check failed — refusing to start server. ${detail}`,
++    );
++    exitFn(1);
++  }
++  throw err;
++}
+diff --git a/server/modules/database/tests/init-helpers.test.ts b/server/modules/database/tests/init-helpers.test.ts
+new file mode 100644
+index 0000000..ba609c8
+--- /dev/null
++++ b/server/modules/database/tests/init-helpers.test.ts
+@@ -0,0 +1,122 @@
++/**
++ * Tests for `handleMigrationCorruption` — the discriminated fail-closed wiring
++ * point used by `server/index.js` to detect `MigrationCorruptionError` from
++ * the database initializer and call `process.exit(1)` instead of silently
++ * serving requests against a corrupted database.
++ *
++ * C-4 patch follow-up: this helper is the runtime safety guarantee that a
++ * drift in the migration SHAs cannot lead to a running server.
++ *
++ * Test discipline:
++ *   - 注入桩 exitFn 而不是真的调用 process.exit(避免杀掉测试运行器)
++ *   - 覆盖 MigrationCorruptionError 触发 exit(1)
++ *   - 覆盖普通 Error 不触发 exit,且 helper 自身抛错让 caller 继续走原始错误流
++ *   - 覆盖 err 不是 Error 对象的边界情况(字符串/null/undefined)
++ *   - 覆盖 discriminator 通过 `instanceof` 与 duck-typed 两条路径
++ */
++
++import assert from 'node:assert/strict';
++import test from 'node:test';
++
++import {
++  handleMigrationCorruption,
++  isMigrationCorruptionError,
++} from '@/modules/database/init-helpers.js';
++import { MigrationCorruptionError } from '@/modules/database/migrations.js';
++
++/**
++ * Test-only "process exited" sentinel — thrown by the stub `exitFn` so
++ * `handleMigrationCorruption` can short-circuit cleanly without leaking
++ * the (intentionally) non-halting stub return value into runtime code.
++ */
++class TestExitSignal extends Error {
++  readonly code: number;
++  constructor(code: number) {
++    super(`test-stub-exit(${code})`);
++    this.name = 'TestExitSignal';
++    this.code = code;
++  }
++}
++
++/** Build a stub exit function that records calls AND throws to halt the test. */
++function makeStubExit(): { fn: (code?: number) => never; calls: number[] } {
++  const calls: number[] = [];
++  const fn = ((code?: number): never => {
++    calls.push(typeof code === 'number' ? code : 1);
++    throw new TestExitSignal(calls[calls.length - 1]!);
++  }) as (code?: number) => never;
++  return { fn, calls };
++}
++
++test('isMigrationCorruptionError 识别真实 MigrationCorruptionError 实例', () => {
++  const real = new MigrationCorruptionError('boom', ['m1'], [
++    { name: 'm1', expectedSha: 'a', actualSha: 'b' },
++  ]);
++  assert.equal(isMigrationCorruptionError(real), true);
++});
++
++test('isMigrationCorruptionError 不识别普通 Error / 字符串 / null / undefined', () => {
++  assert.equal(isMigrationCorruptionError(new Error('nope')), false);
++  assert.equal(isMigrationCorruptionError('raw string'), false);
++  assert.equal(isMigrationCorruptionError(null), false);
++  assert.equal(isMigrationCorruptionError(undefined), false);
++  // 缺 Error 原型链的"鸭子对象"不应被误判
++  assert.equal(
++    isMigrationCorruptionError({ name: 'MigrationCorruptionError' }),
++    false,
++  );
++});
++
++test('handleMigrationCorruption 收到 MigrationCorruptionError 时调用 exit(1)', () => {
++  const { fn, calls } = makeStubExit();
++  const real = new MigrationCorruptionError(
++    'migrations drifted',
++    ['m1'],
++    [{ name: 'm1', expectedSha: 'a', actualSha: 'b' }],
++  );
++  // 命中 corruption 时 helper 必须调用 exitFn(1),并且控制流不会回到
++  // 调用方 —— 通过 stub 抛 TestExitSignal 实现"halt"。
++  assert.throws(
++    () => handleMigrationCorruption(real, fn),
++    (err: unknown) => err instanceof TestExitSignal && err.code === 1,
++  );
++  assert.deepEqual(calls, [1], 'corruption 分支应调用一次 exit(1)');
++});
++
++test('handleMigrationCorruption 收到普通 Error 时原样抛出,不调用 exit', () => {
++  const { fn, calls } = makeStubExit();
++  const original = new Error('disk full');
++  assert.throws(
++    () => handleMigrationCorruption(original, fn),
++    (err: unknown) => err === original,
++    'helper 应原样抛出原始 error',
++  );
++  assert.equal(calls.length, 0, '非 corruption 错误不应触发 exit');
++});
++
++test('handleMigrationCorruption 收到字符串/非 Error 时原样抛出', () => {
++  const { fn, calls } = makeStubExit();
++  assert.throws(
++    () => handleMigrationCorruption('something bad', fn),
++    (err: unknown) => err === 'something bad',
++  );
++  assert.throws(
++    () => handleMigrationCorruption(undefined, fn),
++    (err: unknown) => err === undefined,
++  );
++  assert.equal(calls.length, 0);
++});
++
++test('handleMigrationCorruption 兼容 duck-typed Error instance + name="MigrationCorruptionError"', () => {
++  const { fn, calls } = makeStubExit();
++  // 即便不是真正的 instanceof,也允许通过 `name` 字段判定 —— 用于跨
++  // 模块边界 / 跨进程日志传递时的容错。
++  const duck = Object.assign(new Error('from log line'), {
++    name: 'MigrationCorruptionError',
++  });
++  assert.throws(
++    () => handleMigrationCorruption(duck, fn),
++    (err: unknown) => err instanceof TestExitSignal && err.code === 1,
++  );
++  assert.deepEqual(calls, [1]);
++});
+diff --git a/server/modules/onsite-analysis/tests/problem.service.test.ts b/server/modules/onsite-analysis/tests/problem.service.test.ts
+index 76bf618..a9818fd 100644
+--- a/server/modules/onsite-analysis/tests/problem.service.test.ts
++++ b/server/modules/onsite-analysis/tests/problem.service.test.ts
+@@ -73,38 +73,71 @@ test('create 写入 YYYYMMDD-客户 目录 + problem.json', async () => {
+ 
+     const dirPath = path.join(process.env.ONSITE_ROOT!, '20260703-山西公安');
+     const jsonPath = path.join(dirPath, 'problem.json');
+     const json = JSON.parse(await (await import('node:fs/promises')).readFile(jsonPath, 'utf8'));
+     assert.equal(json.customer, '山西公安');
+     assert.equal(json.iteration, 'master_5.2_3.2');
+     assert.equal(json.status, 'pending_info');
+   });
+ });
+ 
+-test('create 同日同客户重复 -> 自动加 _2 后缀', async () => {
++test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirName dedup 路径)', async () => {
+   await withIsolatedEnv(async () => {
+     const cwd = process.env.ONSITE_ROOT + '/20260703-山西公安';
+-    await problemService.create({
++
++    // 第一次创建:目录名应当是 base(没有 _2 后缀),即
++    // `nextAvailableDirName` 返回的就是 baseDirName。
++    const first = await problemService.create({
+       customer: '山西公安',
+       third_bridge_branch: 'master_5.2_3.2',
+       iteration: 'master_5.2_3.2',
+       database: 'db01',
+       cwd,
+     });
++    assert.equal(
++      first.id,
++      '20260703-山西公安',
++      '首次创建应原样使用 base 目录名,不走 dedup 分支',
++    );
++    assert.equal(first.cwd, path.join(process.env.ONSITE_ROOT!, '20260703-山西公安'));
++
++    // 第二次创建:故意传同样的 cwd(而不是预先加 _2 后缀),让
++    // `nextAvailableDirName` 真正命中 dedup 循环,以确保该分支被
++    // 覆盖。如果实现只用 cwd 的字面字符串就把 _2 拼回去,这条路径
++    // 永远不会跑到。
+     const second = await problemService.create({
+       customer: '山西公安',
+       third_bridge_branch: 'master_5.2_3.2',
+       iteration: 'master_5.2_3.2',
+       database: 'db01',
+-      cwd: cwd + '_2',
++      cwd, // 故意不变,跟 first 完全一致
+     });
+-    assert.ok(second.id.endsWith('_2') || second.id.includes('_2'));
++    assert.equal(
++      second.id,
++      '20260703-山西公安_2',
++      '第二次创建应触发 dedup,_2 后缀由 nextAvailableDirName 分配',
++    );
++    assert.equal(
++      second.cwd,
++      path.join(process.env.ONSITE_ROOT!, '20260703-山西公安_2'),
++      'dedup 后 record.cwd 也应指向新的 _2 目录,而不是 caller 传过来的 cwd',
++    );
++
++    // 两个目录都应当真实存在于磁盘上 —— 用 list 再把它们读出来确认
++    // 两条记录都在 DB 行里。
++    const listed = await problemService.list();
++    const ids = listed.map((item) => item.id).sort();
++    assert.deepEqual(
++      ids,
++      ['20260703-山西公安', '20260703-山西公安_2'],
++      'list 应同时返回首次和 dedup 后的两条记录',
++    );
+   });
+ });
+ 
+ test('create cwd 越界(/etc) -> 抛 CwdEscapeError', async () => {
+   await withIsolatedEnv(async () => {
+     await assert.rejects(
+       problemService.create({
+         customer: 'evil',
+         third_bridge_branch: 'master_5.2_3.2',
+         iteration: 'master_5.2_3.2',

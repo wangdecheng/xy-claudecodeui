@@ -20,7 +20,7 @@ import test from 'node:test';
 
 import { closeConnection } from '@/modules/database/connection.js';
 import { initSchemaWithMigrations } from '@/modules/database/tests/helpers/test-schema.js';
-import { sanitizeCustomerLabel, CwdEscapeError, problemService } from '../problem.service.js';
+import { sanitizeCustomerLabel, CwdEscapeError, problemService, DescriptionRequiredError } from '../problem.service.js';
 
 async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
   const previousDb = process.env.DATABASE_PATH;
@@ -80,8 +80,10 @@ test('create 写入 YYYYMMDD-客户 目录 + problem.json', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + `/${yyyymmdd}-山西公安`,
+      description: '现场反馈第三方登录失败,traceId=abc123',
     });
     assert.ok(record.id.startsWith(`${yyyymmdd}-山西公安`));
+    assert.equal(record.description, '现场反馈第三方登录失败,traceId=abc123');
 
     const dirPath = path.join(process.env.ONSITE_ROOT!, `${yyyymmdd}-山西公安`);
     const jsonPath = path.join(dirPath, 'problem.json');
@@ -105,6 +107,7 @@ test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirNa
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd,
+      description: '首次创建',
     });
     assert.equal(
       first.id,
@@ -123,6 +126,7 @@ test('create 同日同客户重复 -> 自动加 _2 后缀(走 nextAvailableDirNa
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd, // 故意不变,跟 first 完全一致
+      description: '同日重复创建',
     });
     assert.equal(
       second.id,
@@ -156,8 +160,27 @@ test('create cwd 越界(/etc) -> 抛 CwdEscapeError', async () => {
         iteration: 'master_5.2_3.2',
         database: 'db01',
         cwd: '/etc',
+        description: 'evil',
       }),
       (error: unknown) => error instanceof CwdEscapeError,
+    );
+  });
+});
+
+test('create description 为空字符串 -> 抛 DescriptionRequiredError', async () => {
+  await withIsolatedEnv(async () => {
+    const cwd = process.env.ONSITE_ROOT + '/20260101-X';
+    await assert.rejects(
+      () =>
+        problemService.create({
+          customer: 'X',
+          third_bridge_branch: null,
+          iteration: 'master_5.2_3.2',
+          database: 'db01',
+          cwd,
+          description: '   ',
+        }),
+      (error: unknown) => error instanceof DescriptionRequiredError,
     );
   });
 });
@@ -221,6 +244,7 @@ test('getById 返回 record 或 null', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd,
+      description: 'X 描述',
     });
     const row = await problemService.getById(created.id);
     assert.ok(row);
@@ -246,6 +270,7 @@ test('create 接 date 字段: 选了未来日期抛 400', async () => {
           database: 'db01',
           cwd,
           date: futureIso,
+          description: 'X 描述',
         }),
       (err: unknown) => {
         assert.ok(err instanceof Error);
@@ -266,6 +291,7 @@ test('create 接 date 字段: 指定日期应作为 YYYYMMDD 目录前缀', asyn
       database: 'db01',
       cwd,
       date: '2026-05-15',
+      description: 'Y 描述',
     });
     // 目录前缀应来自 date 字段,不是今天
     assert.ok(
@@ -284,6 +310,7 @@ test('create 不接 date 字段时,默认用今天(向后兼容)', async () => {
       iteration: 'master_5.2_3.2',
       database: 'db01',
       cwd,
+      description: 'Z 描述',
     });
     const today = todayYyyymmdd();
     assert.ok(

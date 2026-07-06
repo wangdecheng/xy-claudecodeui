@@ -279,8 +279,17 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       >
         <div className="flex flex-wrap items-center gap-2">
           <span data-testid="onsite-chat-title" className="text-sm font-semibold text-foreground">
-            {problem.customer} · {problem.title?.trim() || '现场问题'}
+            {problem.customer}
           </span>
+          {problem.description && (
+            <span
+              data-testid="onsite-chat-description"
+              className="max-w-[60%] truncate text-xs text-muted-foreground"
+              title={problem.description}
+            >
+              · {problem.description}
+            </span>
+          )}
           <StatusBadge status={problem.status} />
           <div className="ml-auto flex items-center gap-2">
             <CwdLockView cwd={problem.cwd} />

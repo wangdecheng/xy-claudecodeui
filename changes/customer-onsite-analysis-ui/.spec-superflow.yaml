@@ -1,0 +1,41 @@
+# .spec-superflow.yaml — lightweight state machine
+# Derived data. Always rebuildable from artifacts. Lost/corrupt → fall back to content-level detection.
+
+# === Core state ===
+state: approved-for-build
+workflow: full
+
+# === Hashes (fast staleness detection) ===
+artifacts_hash: sha256:c4c6303dc85a0d571b85f899b840a64ce8fa1d079ce1beaa2050a03005403e33
+contract_hash: sha256:10b43c35230f97c5e574a779fca24ae833eb5867ece83f33d70223933b510aa4
+
+# === Execution progress ===
+execution_mode: sdd
+batches_completed: 8
+test_result: null
+
+# === Metadata ===
+change_name: customer-onsite-analysis-ui
+last_transition: 2026-07-06T08:00:00.000Z
+last_transition_from: executing
+last_transition_to: approved-for-build
+
+# === Decision points ===
+dp_0_decisions: "approved: 第一轮(2026-07-03)走 full 流程,本轮(2026-07-06)为增量,跳过 DP-0 因 artifacts 已完整存在"
+dp_0_confirmed: true
+dp_0_timestamp: 2026-07-03T11:29:31.142Z
+
+dp_2_result: "approved: specs/issue-create.md/issue-chat.md/issue-list.md 追加 19 条 MUST(REQ-1.5~1.13/4.5~4.10/2.6/2.7);tasks.md 追加 Batch 9(12 Task)+ Batch 10(4 Task)+ Prototype field alignment checklist(17 自动+3 人工)"
+dp_2_timestamp: 2026-07-06T08:00:00.000Z
+
+dp_3_result: null
+dp_3_timestamp: null
+
+dp_4_result: null
+dp_4_timestamp: null
+dp_5_result: null
+dp_5_timestamp: null
+dp_6_result: null
+dp_6_timestamp: null
+dp_7_result: null
+dp_7_timestamp: null

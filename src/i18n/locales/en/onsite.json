@@ -1,65 +1,66 @@
 {
+  "_note": "onsite 工作台强制中文 UI;en.json 镜像 zh-CN 的中文文案,避免英文 locale 看到英文字段。",
   "nav": {
-    "onsite": "🔍 Customer Onsite Analysis",
-    "newIssue": "New onsite problem",
-    "active": "Active",
-    "archived": "Archived"
+    "onsite": "🔍 客户现场分析",
+    "newIssue": "新建现场问题",
+    "active": "进行中",
+    "archived": "已归档"
   },
   "wizard": {
-    "title": "New Customer Onsite Problem",
-    "subtitle": "Three required inputs identify the service branch and SQL dialect. Without them, analysis cannot start. The directory will be auto-created as YYYYMMDD-<customer>.",
-    "date": "Problem date",
-    "customer": "Customer",
-    "customerPlaceholder": "Select a customer",
-    "thirdPartyHint": "Third-party branch (optional)",
-    "noThirdParty": "No third-party branch",
-    "iteration": "Iteration",
-    "iterationPlaceholder": "Select an iteration",
-    "database": "Database",
-    "databasePlaceholder": "Enter database name",
-    "databaseOther": "Other",
-    "otherHint": "Database type unspecified — please confirm on site later",
-    "dzNote": "Each archive extracts to its own subdirectory (pod-1/, pod-2/, …) — overwrites are blocked to avoid blind spots.",
-    "upload": "Upload logs / artifacts (optional)",
-    "uploadHint": ".zip / .tar.gz supported, ≤ 200MB per file, up to 20 files",
-    "uploadBeforeCreate": "Please create the problem before uploading files",
-    "submit": "Create problem",
-    "createSuccess": "Problem created",
-    "createFailed": "Failed to create, please retry",
-    "titleField": "Problem title (optional)",
-    "titlePlaceholder": "e.g. Third-party login failure",
-    "titleTooLong": "Title must be at most 80 characters"
-  },
-  "chat": {
-    "userRole": "Onsite feedback",
-    "assistantRole": "Claude · Investigation order: logs → source → DB",
-    "placeholder": "Add context, paste a log snippet, or ask Claude to continue the next step…",
-    "composerHint": "Claude Code only · CWD locked at {cwd}",
-    "emptyDefault": "No messages yet"
+    "title": "新建客户现场问题",
+    "subtitle": "三项必给信息用于定位服务分支与 SQL 方言,缺任一项将无法开始分析。目录会按 YYYYMMDD-客户简称 自动创建。",
+    "date": "问题日期",
+    "customer": "客户",
+    "customerPlaceholder": "请选择客户",
+    "thirdPartyHint": "三平台分支(可选)",
+    "noThirdParty": "无三平台分支",
+    "iteration": "版本",
+    "iterationPlaceholder": "请选择版本",
+    "database": "数据库",
+    "databasePlaceholder": "请输入数据库名",
+    "databaseOther": "其他",
+    "otherHint": "未指定数据库类型,请稍后在现场补充",
+    "dzNote": "每个压缩包将解压到独立子目录(pod-1/、pod-2/…),禁止覆盖——避免排查盲区",
+    "upload": "上传日志/资料(可选)",
+    "uploadHint": "支持 .zip / .tar.gz,单文件 ≤ 200MB,最多 20 个",
+    "uploadBeforeCreate": "请先创建问题再上传文件",
+    "submit": "创建问题",
+    "createSuccess": "问题创建成功",
+    "createFailed": "创建失败,请稍后重试",
+    "descriptionField": "问题描述",
+    "descriptionPlaceholder": "尽量精确:大概时间点、用户、碰到了什么问题",
+    "descriptionRequired": "问题描述为必填项"
   },
   "status": {
-    "pending_info": "Awaiting info",
-    "analyzing": "Analyzing",
-    "blocked": "Blocked",
-    "confirmed": "Root cause confirmed",
-    "abandoned": "Abandoned"
+    "pending_info": "待补充信息",
+    "analyzing": "分析中",
+    "blocked": "已阻塞",
+    "confirmed": "已确认根因",
+    "abandoned": "已废弃"
   },
   "error": {
-    "configInvalid": "Customer config is invalid or not loaded yet",
-    "networkError": "Network error, please retry",
-    "uploadFailed": "Upload failed",
-    "reasonTooShort": "Reason must be at least 8 characters",
-    "invalidTransition": "Disallowed status transition"
+    "configInvalid": "客户配置无效或尚未加载",
+    "networkError": "网络错误,请稍后重试",
+    "uploadFailed": "上传失败",
+    "reasonTooShort": "变更原因至少 8 个字符",
+    "invalidTransition": "不允许的状态迁移"
   },
   "discipline": {
-    "softeningTag": "Softening words detected — please use a deterministic conclusion",
-    "suspectToast": "This root cause summary may be inaccurate — please verify the evidence",
-    "writeProtectionCounter": "Root cause is currently locked. Contact an admin to modify."
+    "softeningTag": "检测到软化词,请改用确定性结论",
+    "suspectToast": "本次根因摘要可能不准确,建议复核证据",
+    "writeProtectionCounter": "当前根因已锁定,如需修改请联系管理员"
+  },
+  "chat": {
+    "userRole": "现场反馈",
+    "assistantRole": "Claude · 取证顺序:日志 → 源码 → DB",
+    "placeholder": "补充信息、粘贴日志片段,或让 Claude 继续下一步取证…",
+    "composerHint": "仅对接 Claude Code · 工作目录锁定在 {cwd}",
+    "emptyDefault": "暂无消息"
   },
   "common": {
-    "back": "Back",
-    "loading": "Loading...",
-    "empty": "No data",
-    "retry": "Retry"
+    "back": "返回",
+    "loading": "加载中...",
+    "empty": "暂无数据",
+    "retry": "重试"
   }
 }

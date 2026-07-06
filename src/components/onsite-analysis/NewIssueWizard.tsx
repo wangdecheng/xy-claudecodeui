@@ -57,7 +57,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   })();
   const [date, setDate] = useState(todayIso);
-  const [title, setTitle] = useState('');
+  const [description, setDescription] = useState('');
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -71,7 +71,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     setIteration('');
     setDatabase('');
     setDate(todayIso);
-    setTitle('');
+    setDescription('');
     setErrorMsg(null);
     setCreatedId(null);
   }, [open, loadConfig, loadProblems]);
@@ -97,7 +97,13 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   }, [customer, customers]);
 
   const canSubmit =
-    configOk && customer.length > 0 && iteration.length > 0 && database.length > 0 && date.length > 0 && !creating;
+    configOk &&
+    customer.length > 0 &&
+    iteration.length > 0 &&
+    database.length > 0 &&
+    date.length > 0 &&
+    description.trim().length > 0 &&
+    !creating;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -109,11 +115,9 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
       iteration,
       database,
       date,
+      description: description.trim().slice(0, 2000),
       cwd: matched?.branch ?? customer, // fallback to customer label; server validates cwd
     };
-    if (title.trim().length > 0) {
-      body.title = title.trim().slice(0, 80);
-    }
     // CRITICAL: when the customer is "no third-party", omit branch entirely.
     if (matched && matched.branch !== null) {
       body.third_bridge_branch = matched.branch;
@@ -198,22 +202,25 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
         <DatabaseSelect value={database} onChange={setDatabase} />
 
         <div className="flex flex-col gap-1">
-          <label htmlFor="onsite-title-input" className="text-xs font-medium text-foreground">
-            {t('onsite:wizard.titleField', { defaultValue: '问题主标题(可选)' })}
+          <label htmlFor="onsite-description-input" className="text-xs font-medium text-foreground">
+            {t('onsite:wizard.descriptionField', { defaultValue: '问题描述' })}
+            <span className="ml-0.5 text-destructive">*</span>
           </label>
-          <input
-            id="onsite-title-input"
-            data-testid="onsite-title-input"
-            type="text"
-            value={title}
-            maxLength={80}
-            placeholder={t('onsite:wizard.titlePlaceholder', { defaultValue: '如:第三方登录失败' })}
-            onChange={(e) => setTitle(e.target.value)}
-            className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          <textarea
+            id="onsite-description-input"
+            data-testid="onsite-description-input"
+            value={description}
+            maxLength={2000}
+            rows={4}
+            placeholder={t('onsite:wizard.descriptionPlaceholder', {
+              defaultValue: '尽量精确:大概时间点、用户、碰到了什么问题',
+            })}
+            onChange={(e) => setDescription(e.target.value)}
+            className="resize-y rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
           />
-          {title.length >= 80 && (
-            <span data-testid="onsite-title-too-long" className="text-[11px] text-destructive">
-              {t('onsite:wizard.titleTooLong', { defaultValue: '标题不能超过 80 字符' })}
+          {description.trim().length === 0 && (
+            <span data-testid="onsite-description-required" className="text-[11px] text-amber-700 dark:text-amber-300">
+              {t('onsite:wizard.descriptionRequired', { defaultValue: '问题描述为必填项' })}
             </span>
           )}
         </div>

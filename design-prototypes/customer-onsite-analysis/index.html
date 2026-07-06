@@ -1,0 +1,686 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>客户现场问题分析 · 交互原型</title>
+<style>
+  /* ============================================================
+     设计 token — 直接复用 xy-claudecodeui 的深色主题变量
+     （src/index.css .dark 块的真实数值）
+     ============================================================ */
+  :root {
+    /* 浅色默认主题 —— 取自 xy-claudecodeui src/index.css :root */
+    --background: 44 22% 96%;
+    --foreground: 36 25% 4%;
+    --card: 0 0% 100%;
+    --card-foreground: 36 25% 4%;
+    --popover: 0 0% 100%;
+    --primary: 221.2 83.2% 53.3%;
+    --primary-foreground: 210 40% 98%;
+    --secondary: 44 15% 91%;
+    --secondary-foreground: 36 15% 18%;
+    --muted: 44 15% 91%;
+    --muted-foreground: 40 5% 40%;
+    --accent: 44 15% 91%;
+    --destructive: 0 84% 55%;
+    --border: 44 14% 87%;
+    --input: 44 14% 87%;
+    --ring: 221.2 83.2% 53.3%;
+    --radius: 0.5rem;
+
+    /* 排查场景语义色（浅底上加深，保证 4.5:1 对比度） */
+    --status-confirmed: 142 65% 33%;   /* 已证实 - 绿 */
+    --status-analyzing: 221 83% 53%;   /* 分析中 - 蓝 */
+    --status-blocked: 32 90% 40%;      /* 阻塞 - 琥珀 */
+    --status-pending: 0 0% 45%;        /* 待补信息 - 灰 */
+    --danger: 0 74% 48%;
+
+    /* Claude 品牌橙 */
+    --claude: 14 55% 55%;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Encode Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', Roboto, sans-serif;
+    background: hsl(var(--background));
+    color: hsl(var(--foreground));
+    height: 100vh;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+    font-size: 14px;
+    line-height: 1.5;
+  }
+
+  /* ============================ 顶栏 ============================ */
+  .topbar {
+    height: 52px;
+    display: flex;
+    align-items: center;
+    padding: 0 16px;
+    border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / 0.6);
+    backdrop-filter: blur(20px) saturate(1.6);
+    gap: 12px;
+    position: relative;
+    z-index: 10;
+  }
+  .brand { display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 15px; }
+  .brand .logo {
+    width: 26px; height: 26px; border-radius: 7px;
+    background: linear-gradient(135deg, hsl(var(--primary)), hsl(262 83% 62%));
+    display: grid; place-items: center; color: white;
+  }
+  .provider-pill {
+    display: flex; align-items: center; gap: 6px;
+    font-size: 12px; color: hsl(var(--muted-foreground));
+    padding: 4px 10px; border: 1px solid hsl(var(--border));
+    border-radius: 999px; background: hsl(var(--secondary));
+  }
+  .provider-pill .dot { width: 7px; height: 7px; border-radius: 50%; background: hsl(var(--status-confirmed)); box-shadow: 0 0 6px hsl(var(--status-confirmed)); }
+  .topbar .cwd {
+    margin-left: auto; font-size: 12px; color: hsl(var(--muted-foreground));
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    display: flex; align-items: center; gap: 6px;
+  }
+  .topbar .cwd .lock { color: hsl(var(--status-blocked)); }
+
+  /* ============================ 布局 ============================ */
+  .layout { display: flex; height: calc(100vh - 52px); }
+
+  /* ---------- 左栏：问题列表 ---------- */
+  .sidebar {
+    width: 300px; flex-shrink: 0;
+    border-right: 1px solid hsl(var(--border));
+    display: flex; flex-direction: column;
+    background: hsl(44 18% 93.5%);
+  }
+  .sidebar-head { padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+  .search {
+    display: flex; align-items: center; gap: 8px;
+    background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
+    border-radius: var(--radius); padding: 7px 10px;
+  }
+  .search input { background: none; border: none; outline: none; color: inherit; width: 100%; font-size: 13px; }
+  .search svg { color: hsl(var(--muted-foreground)); flex-shrink: 0; }
+  .btn-new {
+    display: flex; align-items: center; justify-content: center; gap: 7px;
+    background: hsl(var(--primary)); color: hsl(var(--primary-foreground));
+    border: none; border-radius: var(--radius); padding: 9px; font-size: 13px; font-weight: 600;
+    cursor: pointer; transition: filter .15s ease;
+  }
+  .btn-new:hover { filter: brightness(1.08); }
+
+  .list-label { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: hsl(var(--muted-foreground)); padding: 6px 14px 4px; }
+  .issue-list { flex: 1; overflow-y: auto; padding: 0 8px 12px; display: flex; flex-direction: column; gap: 4px; }
+
+  .issue {
+    padding: 10px 11px; border-radius: var(--radius); cursor: pointer;
+    border: 1px solid transparent; transition: background .12s ease, border-color .12s ease;
+  }
+  .issue:hover { background: hsl(var(--secondary) / .6); }
+  .issue.active { background: hsl(var(--primary) / .12); border-color: hsl(var(--primary) / .35); }
+  .issue-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .issue-name { font-weight: 600; font-size: 13.5px; display: flex; align-items: center; gap: 7px; }
+  .issue-name .cust { color: hsl(var(--foreground)); }
+  .issue-date { font-size: 11px; color: hsl(var(--muted-foreground)); font-family: ui-monospace, monospace; margin-top: 3px; }
+  .issue-meta { display: flex; gap: 5px; margin-top: 8px; flex-wrap: wrap; }
+
+  /* 状态徽章 */
+  .badge {
+    font-size: 10.5px; font-weight: 600; padding: 2px 7px; border-radius: 999px;
+    display: inline-flex; align-items: center; gap: 4px; white-space: nowrap;
+  }
+  .badge .bdot { width: 6px; height: 6px; border-radius: 50%; }
+  .badge.confirmed { color: hsl(var(--status-confirmed)); background: hsl(var(--status-confirmed) / .13); }
+  .badge.confirmed .bdot { background: hsl(var(--status-confirmed)); }
+  .badge.analyzing { color: hsl(var(--status-analyzing)); background: hsl(var(--status-analyzing) / .13); }
+  .badge.analyzing .bdot { background: hsl(var(--status-analyzing)); animation: pulse 1.6s infinite; }
+  .badge.blocked { color: hsl(var(--status-blocked)); background: hsl(var(--status-blocked) / .14); }
+  .badge.blocked .bdot { background: hsl(var(--status-blocked)); }
+  .badge.pending { color: hsl(var(--status-pending)); background: hsl(var(--status-pending) / .14); }
+  .badge.pending .bdot { background: hsl(var(--status-pending)); }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
+
+  .chip {
+    font-size: 10.5px; padding: 2px 7px; border-radius: 5px;
+    background: hsl(var(--secondary)); color: hsl(var(--muted-foreground));
+    border: 1px solid hsl(var(--border));
+  }
+
+  /* ---------- 右栏：分析对话 ---------- */
+  .main { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+  .analysis-head {
+    padding: 14px 20px; border-bottom: 1px solid hsl(var(--border));
+    background: hsl(var(--card) / .4);
+  }
+  .ah-title { display: flex; align-items: center; gap: 10px; font-size: 16px; font-weight: 700; }
+  .ah-info { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; align-items: center; }
+  .info-chip {
+    font-size: 12px; padding: 4px 10px; border-radius: 6px;
+    background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
+    display: flex; align-items: center; gap: 6px;
+  }
+  .info-chip .k { color: hsl(var(--muted-foreground)); }
+  .info-chip .v { font-weight: 600; }
+  .info-chip.missing { border-color: hsl(var(--status-blocked) / .5); background: hsl(var(--status-blocked) / .1); }
+  .info-chip.missing .v { color: hsl(var(--status-blocked)); }
+  .files-row { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+  .file-tag {
+    font-size: 11.5px; padding: 4px 9px; border-radius: 6px; font-family: ui-monospace, monospace;
+    background: hsl(44 20% 95%); border: 1px solid hsl(var(--border));
+    display: flex; align-items: center; gap: 6px; color: hsl(var(--foreground) / .85);
+  }
+  .file-tag .sz { color: hsl(var(--muted-foreground)); }
+  .file-tag.extracted { border-color: hsl(var(--status-confirmed) / .35); }
+
+  /* 对话流 */
+  .stream { flex: 1; overflow-y: auto; padding: 22px 20px; display: flex; flex-direction: column; gap: 20px; }
+  .msg { display: flex; gap: 12px; max-width: 900px; }
+  /* 用户消息：右对齐 + 蓝色气泡，头像在右 */
+  .msg.user { flex-direction: row-reverse; align-self: flex-end; }
+  .msg.user .msg-body { display: flex; flex-direction: column; align-items: flex-end; }
+  .msg.user .msg-role { text-align: right; }
+  .bubble { background: hsl(var(--primary)); color: #fff; padding: 10px 14px; border-radius: 14px; border-top-right-radius: 4px; max-width: 620px; font-size: 14px; line-height: 1.6; }
+  .bubble .mono { background: hsl(0 0% 100% / .22); color: #fff; }
+  .avatar { width: 30px; height: 30px; border-radius: 8px; flex-shrink: 0; display: grid; place-items: center; font-size: 13px; font-weight: 700; }
+  .avatar.user { background: hsl(var(--secondary)); color: hsl(var(--foreground)); }
+  .avatar.ai { background: hsl(var(--claude)); color: white; }
+  .msg-body { flex: 1; min-width: 0; }
+  .msg-role { font-size: 12px; color: hsl(var(--muted-foreground)); margin-bottom: 5px; font-weight: 600; }
+  .msg-text { font-size: 14px; line-height: 1.6; }
+  .msg-text p { margin-bottom: 8px; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12.5px; background: hsl(44 15% 89%); padding: 1px 6px; border-radius: 4px; }
+
+  /* 结论卡片 */
+  .card {
+    border: 1px solid hsl(var(--border)); border-radius: var(--radius);
+    background: hsl(var(--card)); margin-top: 12px; overflow: hidden;
+  }
+  .card-head { padding: 10px 14px; display: flex; align-items: center; gap: 9px; font-weight: 700; font-size: 13px; border-bottom: 1px solid hsl(var(--border)); }
+  .card-head .ci { width: 22px; height: 22px; border-radius: 6px; display: grid; place-items: center; font-size: 13px; }
+  .card-body { padding: 12px 14px; font-size: 13.5px; line-height: 1.6; }
+
+  .card.confirmed .card-head { color: hsl(var(--status-confirmed)); background: hsl(var(--status-confirmed) / .10); }
+  .card.confirmed .ci { background: hsl(var(--status-confirmed) / .18); }
+  .card.blocked .card-head { color: hsl(var(--status-blocked)); background: hsl(var(--status-blocked) / .08); }
+  .card.blocked .ci { background: hsl(var(--status-blocked) / .18); }
+  .card.evidence .card-head { color: hsl(var(--muted-foreground)); }
+  .card.sql .card-head { color: hsl(var(--status-analyzing)); background: hsl(var(--status-analyzing) / .07); }
+  .card.sql .ci { background: hsl(var(--status-analyzing) / .18); }
+
+  /* 证据引用（日志原文） */
+  .logquote {
+    font-family: ui-monospace, monospace; font-size: 12px; line-height: 1.7;
+    background: hsl(40 24% 97%); border: 1px solid hsl(var(--border));
+    border-radius: 6px; padding: 10px 12px; margin-top: 6px; overflow-x: auto; white-space: pre;
+    color: hsl(36 22% 25%);
+  }
+  .logquote .hl { color: hsl(var(--status-blocked)); font-weight: 700; }
+  .logquote .err { color: hsl(var(--danger)); }
+  .logquote .ok { color: hsl(var(--status-confirmed)); }
+
+  /* 阻塞清单 */
+  .blocklist { list-style: none; display: flex; flex-direction: column; gap: 10px; }
+  .blocklist li { display: flex; gap: 10px; }
+  .blocklist .num { width: 20px; height: 20px; border-radius: 50%; background: hsl(var(--status-blocked) / .18); color: hsl(var(--status-blocked)); display: grid; place-items: center; font-size: 11px; font-weight: 700; flex-shrink: 0; margin-top: 1px; }
+  .blocklist .what { font-weight: 600; }
+  .blocklist .how { color: hsl(var(--muted-foreground)); font-size: 12.5px; margin-top: 2px; }
+  .blocklist .how .mono { font-size: 11.5px; }
+
+  .sql-code {
+    font-family: ui-monospace, monospace; font-size: 12.5px; line-height: 1.7;
+    background: hsl(40 24% 97%); border: 1px solid hsl(var(--border)); border-radius: 6px; padding: 10px 12px; margin-top: 4px;
+    color: hsl(36 22% 25%); white-space: pre-wrap;
+  }
+  .sql-code .kw { color: hsl(var(--status-analyzing)); }
+  .card-foot { padding: 8px 14px; border-top: 1px solid hsl(var(--border)); display: flex; gap: 8px; }
+  .mini-btn { font-size: 11.5px; padding: 4px 10px; border-radius: 6px; border: 1px solid hsl(var(--border)); background: hsl(var(--secondary)); color: hsl(var(--foreground)); cursor: pointer; display: flex; align-items: center; gap: 5px; }
+  .mini-btn:hover { border-color: hsl(var(--primary) / .5); }
+
+  /* 输入区 */
+  .composer { border-top: 1px solid hsl(var(--border)); padding: 14px 20px; background: hsl(var(--card) / .3); }
+  .composer-inner {
+    max-width: 900px; border: 1px solid hsl(var(--border)); border-radius: 12px;
+    background: hsl(var(--card)); padding: 10px 12px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .composer-inner:focus-within { border-color: hsl(var(--ring) / .6); box-shadow: 0 0 0 3px hsl(var(--ring) / .12); }
+  .composer textarea { background: none; border: none; outline: none; color: inherit; resize: none; font-family: inherit; font-size: 14px; width: 100%; }
+  .composer-actions { display: flex; align-items: center; gap: 8px; }
+  .icon-btn {
+    width: 34px; height: 34px; border-radius: 8px; border: 1px solid hsl(var(--border));
+    background: hsl(var(--secondary)); color: hsl(var(--foreground)); cursor: pointer;
+    display: grid; place-items: center;
+  }
+  .icon-btn:hover { border-color: hsl(var(--primary) / .5); color: hsl(var(--primary)); }
+  .send-btn { margin-left: auto; background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: none; border-radius: 8px; padding: 8px 16px; font-weight: 600; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+  .composer-hint { font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 6px; text-align: center; }
+
+  /* ============================ 新建向导 Modal ============================ */
+  .overlay { position: fixed; inset: 0; background: hsl(0 0% 0% / .6); backdrop-filter: blur(3px); display: none; place-items: center; z-index: 100; }
+  .overlay.show { display: grid; animation: fade .15s ease; }
+  @keyframes fade { from { opacity: 0 } to { opacity: 1 } }
+  .modal {
+    width: 520px; max-width: 92vw; max-height: 90vh; overflow-y: auto;
+    background: hsl(var(--popover)); border: 1px solid hsl(var(--border));
+    border-radius: 14px; box-shadow: 0 24px 60px hsl(0 0% 0% / .5);
+    animation: pop .15s ease;
+  }
+  @keyframes pop { from { transform: scale(.96); opacity: 0 } to { transform: scale(1); opacity: 1 } }
+  .modal-head { padding: 18px 20px 6px; }
+  .modal-head h2 { font-size: 17px; }
+  .modal-head p { font-size: 12.5px; color: hsl(var(--muted-foreground)); margin-top: 4px; }
+  .modal-body { padding: 14px 20px 4px; display: flex; flex-direction: column; gap: 16px; }
+  .field label { display: block; font-size: 12.5px; font-weight: 600; margin-bottom: 6px; }
+  .field label .req { color: hsl(var(--danger)); margin-left: 3px; }
+  .field .help { font-size: 11px; color: hsl(var(--muted-foreground)); margin-top: 5px; }
+  .field input, .field select {
+    width: 100%; background: hsl(var(--secondary)); border: 1px solid hsl(var(--border));
+    border-radius: 8px; padding: 9px 11px; color: inherit; font-size: 13.5px; font-family: inherit; outline: none;
+  }
+  .field input:focus, .field select:focus { border-color: hsl(var(--ring) / .6); box-shadow: 0 0 0 3px hsl(var(--ring) / .12); }
+  .field-row { display: flex; gap: 12px; }
+  .field-row .field { flex: 1; }
+
+  /* 拖拽上传区 */
+  .dropzone {
+    border: 1.5px dashed hsl(var(--border)); border-radius: 10px; padding: 22px;
+    text-align: center; cursor: pointer; transition: all .15s ease; background: hsl(var(--secondary) / .4);
+  }
+  .dropzone:hover, .dropzone.drag { border-color: hsl(var(--primary) / .6); background: hsl(var(--primary) / .06); }
+  .dropzone .dz-icon { color: hsl(var(--muted-foreground)); margin-bottom: 8px; }
+  .dropzone .dz-title { font-size: 13px; font-weight: 600; }
+  .dropzone .dz-sub { font-size: 11.5px; color: hsl(var(--muted-foreground)); margin-top: 3px; }
+  .dz-files { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+  .dz-file { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 7px 10px; background: hsl(var(--secondary)); border: 1px solid hsl(var(--border)); border-radius: 7px; font-family: ui-monospace, monospace; }
+  .dz-file .rm { margin-left: auto; color: hsl(var(--muted-foreground)); cursor: pointer; }
+  .dz-note { font-size: 11px; color: hsl(var(--status-blocked)); margin-top: 8px; display: flex; gap: 6px; align-items: flex-start; }
+
+  .modal-foot { padding: 14px 20px 18px; display: flex; gap: 10px; justify-content: flex-end; border-top: 1px solid hsl(var(--border)); margin-top: 8px; }
+  .btn-ghost { background: hsl(var(--secondary)); color: hsl(var(--foreground)); border: 1px solid hsl(var(--border)); border-radius: 8px; padding: 9px 16px; font-size: 13px; cursor: pointer; }
+  .btn-primary { background: hsl(var(--primary)); color: hsl(var(--primary-foreground)); border: none; border-radius: 8px; padding: 9px 18px; font-size: 13px; font-weight: 600; cursor: pointer; }
+  .btn-primary:hover { filter: brightness(1.08); }
+
+  /* 滚动条 */
+  ::-webkit-scrollbar { width: 9px; height: 9px; }
+  ::-webkit-scrollbar-thumb { background: hsl(0 0% 65% / .5); border-radius: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+
+  .proto-banner {
+    position: fixed; bottom: 14px; right: 16px; z-index: 50;
+    font-size: 11px; color: hsl(var(--muted-foreground));
+    background: hsl(var(--card) / .8); border: 1px solid hsl(var(--border));
+    padding: 5px 11px; border-radius: 999px; backdrop-filter: blur(8px);
+  }
+</style>
+</head>
+<body>
+
+  <!-- 顶栏 -->
+  <div class="topbar">
+    <div class="brand">
+      <span class="logo">
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="m21 21-4.3-4.3M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/></svg>
+      </span>
+      客户现场问题分析
+    </div>
+    <span class="provider-pill"><span class="dot"></span>Claude Code</span>
+    <div class="cwd">
+      <span class="lock">
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+      </span>
+      ~/work/customer-onsite-analysis
+    </div>
+  </div>
+
+  <div class="layout">
+    <!-- 左栏：问题列表 -->
+    <aside class="sidebar">
+      <div class="sidebar-head">
+        <div class="search">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m21 21-4.3-4.3M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z"/></svg>
+          <input placeholder="搜索客户 / 迭代 …" />
+        </div>
+        <button class="btn-new" onclick="openModal()">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 5v14M5 12h14"/></svg>
+          新建现场问题
+        </button>
+      </div>
+
+      <div class="list-label">进行中 · 3</div>
+      <div class="issue-list">
+        <!-- 分析中（选中） -->
+        <div class="issue active" onclick="selectIssue(this,'zcck')">
+          <div class="issue-top">
+            <div class="issue-name"><span class="cust">中车长客</span></div>
+            <span class="badge blocked"><span class="bdot"></span>阻塞</span>
+          </div>
+          <div class="issue-date">20260703-zcck</div>
+          <div class="issue-meta">
+            <span class="chip">迭代 5.2_3.2</span>
+            <span class="chip">达梦</span>
+          </div>
+        </div>
+
+        <!-- 已证实 -->
+        <div class="issue" onclick="selectIssue(this,'guangda')">
+          <div class="issue-top">
+            <div class="issue-name"><span class="cust">光大银行</span></div>
+            <span class="badge confirmed"><span class="bdot"></span>已证实</span>
+          </div>
+          <div class="issue-date">20260703-guangda</div>
+          <div class="issue-meta">
+            <span class="chip">迭代 5.2_3.2</span>
+            <span class="chip">MySQL</span>
+          </div>
+        </div>
+
+        <!-- 待补信息 -->
+        <div class="issue" onclick="selectIssue(this,'renda')">
+          <div class="issue-top">
+            <div class="issue-name"><span class="cust">人大</span></div>
+            <span class="badge pending"><span class="bdot"></span>待补信息</span>
+          </div>
+          <div class="issue-date">20260702-renda</div>
+          <div class="issue-meta">
+            <span class="chip" style="border-color:hsl(var(--status-blocked)/.5);color:hsl(var(--status-blocked))">缺：数据库类型</span>
+          </div>
+        </div>
+
+        <div class="list-label" style="margin-top:8px">已归档 · 1</div>
+        <div class="issue" onclick="selectIssue(this,'sinopec')">
+          <div class="issue-top">
+            <div class="issue-name"><span class="cust">中石化</span></div>
+            <span class="badge confirmed"><span class="bdot"></span>已证实</span>
+          </div>
+          <div class="issue-date">20260702-中石化</div>
+          <div class="issue-meta">
+            <span class="chip">third-bridge: sinopec</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- 右栏：分析对话 -->
+    <main class="main">
+      <div class="analysis-head">
+        <div class="ah-title">
+          <span class="badge analyzing"><span class="bdot"></span>分析中</span>
+          中车长客现场问题 · 第三方登录失败
+        </div>
+        <div class="ah-info">
+          <span class="info-chip"><span class="k">客户</span><span class="v">中车长客</span></span>
+          <span class="info-chip"><span class="k">迭代</span><span class="v">release_5.2_3.2</span></span>
+          <span class="info-chip"><span class="k">数据库</span><span class="v">达梦 (dameng)</span></span>
+          <span class="info-chip" data-third-bridge-chip><span class="k">third-bridge 分支</span><span class="v">zcck</span></span>
+        </div>
+        <div class="files-row">
+          <span class="file-tag extracted">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+            thirdbridge.log.zip <span class="sz">→ pod-1/ · 已解压</span>
+          </span>
+          <span class="file-tag extracted">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 6 9 17l-5-5"/></svg>
+            third-adapter.log.zip <span class="sz">→ pod-2/ · 已解压</span>
+          </span>
+          <span class="file-tag">iauth.2026-07-01.0.log.gz <span class="sz">2.3 MB</span></span>
+          <span class="file-tag">日志_15-02-41.xls <span class="sz">截图/工单</span></span>
+        </div>
+      </div>
+
+      <!-- 对话流 -->
+      <div class="stream">
+        <!-- 用户 -->
+        <div class="msg user">
+          <div class="avatar user">我</div>
+          <div class="msg-body">
+            <div class="msg-role">现场反馈</div>
+            <div class="bubble">
+              <p>中车长客现场用第三方账号登录报错，工单里给了 traceId <span class="mono">a1b2c3d4e5f6</span>。日志包已上传，帮忙定位根因。</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Claude：先取证，命中阻塞 -->
+        <div class="msg">
+          <div class="avatar ai">C</div>
+          <div class="msg-body">
+            <div class="msg-role">Claude · 取证顺序：日志 → 源码 → DB</div>
+            <div class="msg-text">
+              <p>已按纪律在全部候选子目录逐个 grep 该 traceId，并记录命中条数：</p>
+            </div>
+
+            <!-- 证据卡片 -->
+            <div class="card evidence">
+              <div class="card-head">
+                <span class="ci">🔍</span> 证据检索 · traceId 全目录扫描
+              </div>
+              <div class="card-body">
+                <div class="logquote">$ grep -rc "a1b2c3d4e5f6" pod-1/ pod-2/ iauth/
+pod-1/thirdbridge.log:      <span class="err">0</span>
+pod-2/third-adapter.log:    <span class="err">0</span>
+iauth/iauth.2026-07-01.log: <span class="err">0</span>
+<span class="hl"># 已穷尽候选目录，全部 count=0</span></div>
+              </div>
+            </div>
+
+            <!-- 阻塞清单卡片：证据不足，禁止推测 -->
+            <div class="card blocked">
+              <div class="card-head">
+                <span class="ci">⛔</span> 未证实 · 阻塞清单（一次只补一件最关键的）
+              </div>
+              <div class="card-body">
+                <ul class="blocklist">
+                  <li>
+                    <span class="num">1</span>
+                    <div>
+                      <div class="what">确认 traceId 是否抄全 / 是否漏传某服务日志</div>
+                      <div class="how">当前 traceId <span class="mono">a1b2c3d4e5f6</span> 在已上传的 3 个服务日志里 <b>命中 0 条</b>。分析对象可能根本不在这批日志中——按铁律，此时<b>禁止用时间窗 / 近似匹配强行出根因</b>。请现场核对：<br>① traceId 是否完整（常见抄漏尾段）；② 是否还有 <span class="mono">externalweb</span>（即 sdk-server）的日志未上传。</div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+              <div class="card-foot">
+                <button class="mini-btn">📋 复制给现场的话术</button>
+                <button class="mini-btn">🔁 补日志后重跑分析</button>
+              </div>
+            </div>
+
+            <div class="msg-text" style="margin-top:12px">
+              <p style="color:hsl(var(--muted-foreground));font-size:13px">拿到补充信息后我会继续；在证据钉死前不会给出任何“可能是 X”的推断结论。</p>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 输入区 -->
+      <div class="composer">
+        <div class="composer-inner">
+          <textarea rows="2" placeholder="补充信息、粘贴日志片段，或让 Claude 继续下一步取证…"></textarea>
+          <div class="composer-actions">
+            <button class="icon-btn" title="上传日志包" onclick="openModal()">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            </button>
+            <button class="icon-btn" title="插入 SQL 模板">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="5" rx="9" ry="3"/><path d="M3 5v14a9 3 0 0 0 18 0V5"/></svg>
+            </button>
+            <button class="send-btn">
+              发送
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
+            </button>
+          </div>
+        </div>
+        <div class="composer-hint">仅对接 Claude Code · 工作目录锁定在 ~/work/customer-onsite-analysis/20260703-zcck</div>
+      </div>
+    </main>
+  </div>
+
+  <!-- ============================ 新建向导 Modal ============================ -->
+  <div class="overlay" id="overlay">
+    <div class="modal">
+      <div class="modal-head">
+        <h2>新建现场问题</h2>
+        <p>三项必给信息用于定位服务分支与 SQL 方言，缺任一项将无法开始分析。目录会按 <span class="mono" style="font-size:11px">YYYYMMDD-客户简称</span> 自动创建。</p>
+      </div>
+      <div class="modal-body">
+        <div class="field-row">
+          <div class="field">
+            <label>客户名称 <span class="req">*</span></label>
+            <select id="cfg-customers" data-source="config/customer-analysis.json::customers">
+              <option value="">加载中…</option>
+            </select>
+            <div class="help" id="cfg-customers-help">选项由 <code>config/customer-analysis.json</code> 驱动 · 不允许手动输入</div>
+          </div>
+          <div class="field" style="max-width:150px">
+            <label>日期 <span class="req">*</span></label>
+            <input type="date" value="2026-07-03" />
+          </div>
+        </div>
+
+        <div class="field-row">
+          <div class="field">
+            <label>迭代 <span class="req">*</span></label>
+            <select id="cfg-iterations" data-source="config/customer-analysis.json::iterations">
+              <option value="">加载中…</option>
+            </select>
+            <div class="help">选项由 <code>config/customer-analysis.json</code> 驱动 · 不允许手动输入</div>
+          </div>
+          <div class="field">
+            <label>数据库类型 <span class="req">*</span></label>
+            <select>
+              <option value="">请选择…</option>
+              <option>MySQL</option>
+              <option>达梦 (dameng)</option>
+              <option>PostgreSQL</option>
+              <option>其他</option>
+            </select>
+            <div class="help">影响 SQL 方言与建库脚本判断</div>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>上传日志 / 截图 / 工单</label>
+          <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
+            <input type="file" id="fileInput" multiple hidden />
+            <div class="dz-icon">
+              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></svg>
+            </div>
+            <div class="dz-title">拖拽日志压缩包到此，或点击选择</div>
+            <div class="dz-sub">支持 .zip / .gz / .log / .xls / 图片 — 多包会各自解压到独立子目录</div>
+          </div>
+          <div class="dz-files">
+            <div class="dz-file">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              thirdbridge.log.zip <span style="color:hsl(var(--muted-foreground))">1.8 MB</span>
+              <span class="rm">✕</span>
+            </div>
+            <div class="dz-file">
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/></svg>
+              third-adapter.log.zip <span style="color:hsl(var(--muted-foreground))">2.1 MB</span>
+              <span class="rm">✕</span>
+            </div>
+          </div>
+          <div class="dz-note">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="flex-shrink:0;margin-top:1px"><path d="M12 9v4M12 17h.01"/><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z"/></svg>
+            每个压缩包将解压到独立子目录（pod-1/、pod-2/…），禁止覆盖——避免排查盲区。
+          </div>
+        </div>
+      </div>
+      <div class="modal-foot">
+        <button class="btn-ghost" onclick="closeModal()">取消</button>
+        <button class="btn-primary" onclick="closeModal()">创建并开始分析</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="proto-banner">交互原型 · 静态演示（点击「新建现场问题」查看向导）</div>
+
+<script>
+  function openModal(){ document.getElementById('overlay').classList.add('show'); }
+  function closeModal(){ document.getElementById('overlay').classList.remove('show'); }
+  document.getElementById('overlay').addEventListener('click', e => { if(e.target.id==='overlay') closeModal(); });
+  document.addEventListener('keydown', e => { if(e.key==='Escape') closeModal(); });
+
+  function selectIssue(el, key){
+    document.querySelectorAll('.issue').forEach(i=>i.classList.remove('active'));
+    el.classList.add('active');
+    // 原型仅演示中车长客的分析视图；其余问题点击后保持当前视图，真实实现会切换对话内容
+  }
+
+  // —— 从 config/customer-analysis.json 加载下拉选项 ——
+  // 真实系统下由后端 API 提供；原型直接 fetch 同目录相对路径。
+  // file:// 协议下 Chrome 拒绝 fetch 加载本地 JSON，故额外提供一份内嵌 fallback，
+  // 既让原型在双击 file:// 打开时也能展示完整效果,又让真实 HTTP 环境优先用配置。
+  // ⚠️ 真实实现里:不要复用这份 fallback,直接删除它,让任何加载失败都显式报错。
+  const CONFIG_FALLBACK = {
+    customers: [
+      { label: "不涉及三方对接", branch: null },
+      { label: "山西公安", branch: "master_5.2_3.2" },
+      { label: "最高检", branch: "zgj_565939" },
+      { label: "中石化", branch: "sinopec" },
+      { label: "中广核", branch: "zgh_4a" },
+      { label: "山东通公有云", branch: "sdt-public" },
+      { label: "山东通私有云", branch: "wechat-customApp-dm" },
+      { label: "上交所", branch: "sse" },
+      { label: "邮储", branch: "psbc_youchu" },
+      { label: "光大集团", branch: "gdjt" },
+      { label: "上海大数据", branch: "wechat-standard-new-v2" },
+      { label: "上海大数据（旧版）", branch: "wechat-sh-datacenter" },
+      { label: "中车长客（zcck）", branch: "zcck" }
+    ],
+    iterations: [
+      "release_5.2_3.2_20260327",
+      "master_5.2_3.2"
+    ]
+  };
+  (async function loadCfgSelects(){
+    const selCustomers = document.getElementById('cfg-customers');
+    const selIters     = document.getElementById('cfg-iterations');
+    const helpCustomer = document.getElementById('cfg-customers-help');
+    let cfg, source = 'file:// fallback';
+    try {
+      const res = await fetch('config/customer-analysis.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      cfg = await res.json();
+      source = 'config/customer-analysis.json';
+    } catch (err) {
+      // file:// 下 fetch 必然失败 → 静默用内嵌 fallback,让原型能继续展示
+      cfg = CONFIG_FALLBACK;
+      source = '内嵌 fallback（file:// 下 fetch 受限，真实 HTTP 环境会自动从配置文件加载）';
+    }
+    helpCustomer.textContent = '✓ 已从 ' + source + ' 加载 · 不允许手动输入';
+
+    // 客户：label 写入显示文本；value 写入分支名（不涉及三方对接时为 '-')
+    // 显示规则：label 里有括号描述分支的(如「中车长客（zcck）」)就不重复后缀；
+    // 纯中文名(如「中石化」)就附加「（sinopec）」便于一眼看出对应分支
+    selCustomers.innerHTML = '<option value="">请选择客户…</option>'
+      + cfg.customers.map(c => {
+          const v = c.branch ?? '-';
+          const noTB = c.branch == null;
+          // label 自带「（xxx）」或 label === branch 时不附加
+          const hasInline = /[（(]/.test(c.label) || c.label === v;
+          const tag = noTB ? '' : (hasInline ? '' : `（${v}）`);
+          return `<option value="${v}" data-branch="${v}" data-no-third-bridge="${noTB}">${c.label}${tag}</option>`;
+        }).join('');
+
+    // 迭代：纯字符串数组
+    selIters.innerHTML = '<option value="">请选择迭代…</option>'
+      + cfg.iterations.map(it => `<option value="${it}">${it}</option>`).join('');
+
+    // 联动：「不涉及三方对接」被选中 → 在头部信息里自动隐藏 third-bridge 分支行
+    selCustomers.addEventListener('change', () => {
+      const opt = selCustomers.selectedOptions[0];
+      const noTB = opt && opt.dataset.noThirdBridge === 'true';
+      const tbChip = document.querySelector('[data-third-bridge-chip]');
+      if (tbChip) tbChip.style.display = noTB ? 'none' : '';
+    });
+  })();
+
+  // 拖拽视觉反馈
+  const dz = document.getElementById('dropzone');
+  ['dragover','dragenter'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.classList.add('drag');}));
+  ['dragleave','drop'].forEach(ev=>dz.addEventListener(ev, e=>{e.preventDefault();dz.classList.remove('drag');}));
+</script>
+</body>
+</html>

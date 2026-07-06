@@ -42,7 +42,7 @@ CHECKS=(
   $'REQ-1.8\tCustomer label suffix\tc\\.branch === null\thasInline\thasInline.*branch\t'"$SRC_DIR/CustomerSelect.tsx"
   $'REQ-1.10\tDatabase other option\tDATABASE_KIND_OTHER\tdatabaseOther\t'"$SRC_DIR/DatabaseSelect.tsx"
   $'REQ-1.11\tESC close\te\\.key === .Escape.\taddEventListener..keydown\t'"$SRC_DIR/NewIssueWizard.tsx"
-  $'REQ-1.12\tTitle field\tdata-testid="onsite-title-input"\ttitle\\.trim.\?..现场问题.\t'"$SRC_DIR/NewIssueWizard.tsx"$'\t'"$SHARED_TYPES"
+  $'REQ-1.12\tDescription field\tdata-testid="onsite-description-input"\tdescriptionRequired\t'"$SRC_DIR/NewIssueWizard.tsx"$'\t'"$SHARED_TYPES"
   $'REQ-1.13\tAlways-visible dropzone\tLogUploader problemId.\\{null\\}\t'"$SRC_DIR/NewIssueWizard.tsx"
   $'REQ-4.5\tMessage avatar\tonsite-avatar-.\thsl.14_55.55.\t'"$SRC_DIR/OnsiteChatStream.tsx"
   $'REQ-4.6\tmsg-role label\tdata-testid="onsite-msg-role"\t现场反馈\t'"$SRC_DIR/OnsiteChatStream.tsx"
@@ -51,7 +51,7 @@ CHECKS=(
   $'REQ-4.10\tThree-color highlight\tHL_HIT\tOK_HIT\tZERO_HIT\t'"$SRC_DIR/cards/EvidenceCard.tsx"
   $'REQ-2.6\tBusiness-phase groups\tBUSINESS_PHASES\tonsite-group-active\t'"$SRC_DIR/IssueListSidebar.tsx"
   $'REQ-2.7\tFull-width new issue button\tonsite-new-issue-button\tw-full\t'"$SRC_DIR/IssueListSidebar.tsx"
-  $'D-10\tTitle backward compat\ttitle\\?:.*string.*null\t'"$SHARED_TYPES"
+  $'D-10\tDescription backward compat\tdescription: string\t'"$SHARED_TYPES"
   $'D-11\tPrototype exists\t'  # 用空 pattern;下面 file_exists 检查特殊处理
 )
 

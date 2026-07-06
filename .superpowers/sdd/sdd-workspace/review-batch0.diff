@@ -1,0 +1,835 @@
+# Review package: 696fc5a..9318b690a0d5c6969d0715d8ab694fa3f87dd587
+
+## Commits
+9318b69 ci(onsite): chat path regression workflow (PR gate)
+14af19b test(onsite): add chat path regression baseline + diff script
+
+## Files changed
+ .github/workflows/regression.yml       | 130 ++++++++++++++++++++++
+ chat-regression-baseline.txt           |   1 +
+ scripts/diff-chat-impact.sh            | 198 +++++++++++++++++++++++++++++++++
+ scripts/regression-chat.sh             | 197 ++++++++++++++++++++++++++++++++
+ scripts/tests/diff-chat-impact.test.ts | 144 ++++++++++++++++++++++++
+ scripts/tests/regression-chat.test.ts  | 113 +++++++++++++++++++
+ 6 files changed, 783 insertions(+)
+
+## Diff
+diff --git a/.github/workflows/regression.yml b/.github/workflows/regression.yml
+new file mode 100644
+index 0000000..8632293
+--- /dev/null
++++ b/.github/workflows/regression.yml
+@@ -0,0 +1,130 @@
++# Chat 路径回归 + diff 检测的 CI 流水线。
++#
++# 触发条件:
++#   - 任何 PR(包含 fork PR 不直接跑敏感 shell,但本工作流只读 + 自包含脚本,允许)
++#   - workflow_dispatch(手动触发)
++#
++# 三步:
++#   1. diff-chat-impact.sh  比较 BASE..HEAD,任一 chat 关键文件被改 → exit 1
++#      (脚本退码 0/1 不阻止 merge,但报告写进 PR;非 0 异常则失败)
++#   2. regression-chat.sh  跑真后端测试,写 chat-regression-baseline.txt
++#      (exit 0 ⇒ 通过;exit 1 ⇒ 阻塞 merge — chat 路径回归)
++#   3. 上传 chat-regression-baseline.txt 作为 PR artifact
++#
++# 关于 SHA 来源:
++#   - pull_request 事件可直接拿 github.event.pull_request.base.sha 和 .head.sha
++#   - workflow_dispatch 没有 PR context,所以允许 "BASE_SHA/HEAD_SHA 未提供时跳过 diff 步骤"
++
++name: Regression — chat path
++
++on:
++  pull_request:
++    branches: [main]
++  workflow_dispatch:
++
++permissions:
++  contents: read
++
++jobs:
++  chat-regression:
++    name: chat path regression + diff
++    runs-on: ubuntu-latest
++    timeout-minutes: 15
++    steps:
++      - name: Checkout
++        uses: actions/checkout@v6
++        with:
++          fetch-depth: 0   # 需要 git diff BASE..HEAD
++
++      - name: Set up Node
++        uses: actions/setup-node@v6
++        with:
++          node-version: 22
++          cache: npm
++
++      - name: Install
++        run: npm ci
++        shell: bash
++
++      - name: Compute BASE_SHA / HEAD_SHA
++        id: shas
++        shell: bash
++        run: |
++          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
++            BASE_SHA="${{ github.event.pull_request.base.sha }}"
++            HEAD_SHA="${{ github.event.pull_request.head.sha }}"
++          else
++            # workflow_dispatch:用 merge-base 与 HEAD 做 BASE
++            BASE_SHA="$(git merge-base origin/main HEAD 2>/dev/null || git rev-parse HEAD)"
++            HEAD_SHA="$(git rev-parse HEAD)"
++          fi
++          echo "base=$BASE_SHA" >> "$GITHUB_OUTPUT"
++          echo "head=$HEAD_SHA" >> "$GITHUB_OUTPUT"
++          echo "BASE_SHA=$BASE_SHA" >> "$GITHUB_ENV"
++          echo "HEAD_SHA=$HEAD_SHA" >> "$GITHUB_ENV"
++
++      # --- 步骤 1:chat 关键文件 diff 检测 ---
++      - name: Diff chat path files
++        id: diff
++        shell: bash
++        run: |
++          set +e
++          ./scripts/diff-chat-impact.sh
++          DIFF_EXIT=$?
++          set -e
++          # exit 0/1 都视为"已完成检测"(1 是预期:有改动需在 PR 描述说明)
++          if [[ $DIFF_EXIT -eq 0 ]]; then
++            echo "diff_clean=true" >> "$GITHUB_OUTPUT"
++          elif [[ $DIFF_EXIT -eq 1 ]]; then
++            echo "diff_clean=false" >> "$GITHUB_OUTPUT"
++            # 提示性失败(reviewer 看 PR diff 即可),不阻塞
++            echo "::warning::chat path critical files were modified — PR must include baseline diff in description"
++          else
++            # 异常(2 = 输入错误等)
++            echo "::error::diff-chat-impact.sh exit=$DIFF_EXIT"
++            exit $DIFF_EXIT
++          fi
++
++      # --- 步骤 2:跑真测试 + 写 baseline ---
++      - name: Run chat regression suite
++        id: regression
++        shell: bash
++        run: |
++          set +e
++          ./scripts/regression-chat.sh 2>&1 | tee chat-regression-run.log
++          REG_EXIT=${PIPESTATUS[0]}
++          set -e
++          echo "regression_exit=$REG_EXIT" >> "$GITHUB_OUTPUT"
++          if [[ $REG_EXIT -ne 0 ]]; then
++            echo "::error::chat path regression FAILED — see log and chat-regression-baseline.txt. Paste baseline diff in PR description."
++            exit $REG_EXIT
++          fi
++
++      # --- 步骤 3:上传 baseline 作为 PR artifact ---
++      - name: Upload baseline artifact
++        if: always()
++        uses: actions/upload-artifact@v4
++        with:
++          name: chat-regression-baseline
++          path: |
++            chat-regression-baseline.txt
++            chat-regression-run.log
++          if-no-files-found: warn
++          retention-days: 30
++
++      # 显式总结两个 step 的结果到 job summary
++      - name: Summary
++        if: always()
++        shell: bash
++        run: |
++          {
++            echo "## chat path regression"
++            echo ""
++            echo "- diff-clean: ${{ steps.diff.outputs.diff_clean }}"
++            echo "- regression: ${{ steps.regression.outputs.regression_exit }}"
++            echo ""
++            echo "### baseline"
++            echo '```'
++            cat chat-regression-baseline.txt 2>/dev/null || echo "(no baseline written)"
++            echo '```'
++          } >> "$GITHUB_STEP_SUMMARY"
+diff --git a/chat-regression-baseline.txt b/chat-regression-baseline.txt
+new file mode 100644
+index 0000000..c7c46a0
+--- /dev/null
++++ b/chat-regression-baseline.txt
+@@ -0,0 +1 @@
++696fc5a5b0a06c3c8eaa3dd960557bb07bcfd654 2026-07-03T11:23:06Z 78 1 8862
+diff --git a/scripts/diff-chat-impact.sh b/scripts/diff-chat-impact.sh
+new file mode 100755
+index 0000000..e79d075
+--- /dev/null
++++ b/scripts/diff-chat-impact.sh
+@@ -0,0 +1,198 @@
++#!/usr/bin/env bash
++# scripts/diff-chat-impact.sh — chat 路径文件 diff 检测(防 C-3 + 落地 PR 描述规范)
++#
++# 用法(从仓库根目录跑):
++#   BASE_SHA=<merge-base-ish> HEAD_SHA=<head> ./scripts/diff-chat-impact.sh
++#   ./scripts/diff-chat-impact.sh <BASE_SHA> <HEAD_SHA>     # 也接受位置参数
++#
++# 退出码:
++#   0  chat 关键路径文件均无改动
++#   1  任一关键文件被改 + 输出风险提示
++#   2  输入错误(缺 BASE_SHA / HEAD_SHA 等)
++#
++# 关键路径(以 git track 为准;新增未 track 文件也能列出):
++#   - server/claude-sdk.js
++#   - server/modules/websocket/services/chat-run-registry.service.ts
++#   - server/modules/websocket/services/chat-websocket.service.ts
++#   - server/modules/database/repositories/sessions*.ts
++#
++# 与回归门禁的关系(Batch 5.5):
++#   diff-chat-impact.sh + regression-chat.sh 组合使用,前者挡文件层,
++#   后者挡行为层。本变更只动以下两个文件:
++#     chat-run-registry.service.ts 加 kind 参数(允许,需 e2e 验证)
++#     sessions 表加列(允许,需 chat e2e 跑通)
++#   所以脚本**报告**即可,真正的"是否阻塞"由 reviewer 在 PR 描述里写明。
++
++set -euo pipefail
++
++PROG_NAME="$(basename "$0")"
++readonly PROG_NAME
++
++if [[ -t 1 ]]; then
++  C_RESET='\033[0m'
++  C_RED='\033[31m'
++  C_GREEN='\033[32m'
++  C_YELLOW='\033[33m'
++  C_BLUE='\033[34m'
++else
++  C_RESET='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
++fi
++log_info() { printf "${C_BLUE}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_ok()   { printf "${C_GREEN}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_warn() { printf "${C_YELLOW}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_err()  { printf "${C_RED}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*" >&2; }
++
++usage() {
++  cat <<EOF
++Usage: $PROG_NAME [<BASE_SHA> <HEAD_SHA>]
++
++Arguments:
++  BASE_SHA   起始 commit SHA(或 env BASE_SHA)
++  HEAD_SHA   终止 commit SHA(或 env HEAD_SHA)
++
++Environment:
++  BASE_SHA / HEAD_SHA  起始/终止 commit SHA(若未传位置参数)
++  GIT_DIFF_AGAINST     设为 WORKTREE 时,与工作区未提交改动比较(BASE 与 HEAD 都视为 HEAD)
++
++行为:
++  比对 BASE..HEAD(默认)的 git diff,找出 chat 关键路径文件是否被改。
++  若有改动,exit 1 + 列出文件 + 改了多少行;否则 exit 0。
++EOF
++}
++
++# --- 参数解析 ---
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    -h|--help)  usage; exit 0 ;;
++    --nonsense*) log_err "unknown flag: $1"; usage; exit 2 ;;
++    -*)          log_err "unknown flag: $1"; usage; exit 2 ;;
++    *)           break ;;   # 剩位置参数走下面赋值
++  esac
++done
++
++if [[ $# -ge 2 ]]; then
++  BASE_SHA="${1:-}"
++  HEAD_SHA="${2:-}"
++elif [[ $# -eq 1 ]]; then
++  log_err "需要同时指定 BASE_SHA 和 HEAD_SHA(或都用环境变量)"
++  usage
++  exit 2
++fi
++
++BASE_SHA="${BASE_SHA:-}"
++HEAD_SHA="${HEAD_SHA:-}"
++
++# 兜底:GitHub Actions 自动提供 GITHUB_BASE_REF / GITHUB_SHA,但简单起见不强依赖
++if [[ -z "$BASE_SHA" || -z "$HEAD_SHA" ]]; then
++  log_err "缺 BASE_SHA 或 HEAD_SHA(env 或位置参数均可)"
++  log_err "  BASE_SHA='${BASE_SHA}'  HEAD_SHA='${HEAD_SHA}'"
++  usage
++  exit 2
++fi
++
++# --- 必须从仓库根 ---
++if [[ ! -d "server" ]] || [[ ! -d ".git" ]]; then
++  log_err "请在仓库根目录运行"
++  exit 1
++fi
++
++# --- git diff 范围 ---
++GIT_DIFF_AGAINST="${GIT_DIFF_AGAINST:-}"
++if [[ "$GIT_DIFF_AGAINST" == "WORKTREE" ]]; then
++  # 与工作区脏改比较(用于本地发 PR 前自检)
++  DIFF_CMD=(git diff --name-only HEAD)
++elif [[ "$BASE_SHA" == "$HEAD_SHA" ]]; then
++  # 同 commit → 必然零 diff,但允许 WORKTREE 叠加
++  DIFF_CMD=(git diff --name-only HEAD)
++else
++  DIFF_CMD=(git diff --name-only "${BASE_SHA}".."${HEAD_SHA}")
++fi
++
++CHANGED="$("${DIFF_CMD[@]}" 2>/dev/null || true)"
++# 也合并 staged 和 untracked(新文件)
++if [[ "$GIT_DIFF_AGAINST" == "WORKTREE" ]]; then
++  UNTRACKED="$(git ls-files --others --exclude-standard 2>/dev/null || true)"
++  CHANGED="$(printf '%s\n%s\n' "$CHANGED" "$UNTRACKED" | grep -v '^$' || true)"
++fi
++
++if [[ -z "$CHANGED" ]]; then
++  log_ok "零改动(base='${BASE_SHA}' head='${HEAD_SHA}'),chat 路径未受影响"
++  exit 0
++fi
++
++# --- 关键文件列表 ---
++# 使用 bash 数组 + glob 模式;展开为绝对路径前缀匹配
++CRITICAL_PATTERNS=(
++  "server/claude-sdk.js"
++  "server/modules/websocket/services/chat-run-registry.service.ts"
++  "server/modules/websocket/services/chat-websocket.service.ts"
++  "server/modules/database/repositories/sessions"
++)
++
++is_critical() {
++  local f="$1"
++  for p in "${CRITICAL_PATTERNS[@]}"; do
++    # glob 匹配:精确匹配或前缀匹配(p 不含 / 时也允许 * 扩展)
++    if [[ "$f" == "$p" ]]; then
++      return 0
++    fi
++    # sessions*.ts → sessions prefix
++    if [[ "$p" == *"*" ]]; then
++      # shell glob
++      # shellcheck disable=SC2053
++      [[ "$f" == $p ]] && return 0
++    else
++      # sessions 是目录前缀:任何 server/.../sessions*.ts 也算
++      case "$f" in
++        "${p}"*.ts|${p}*.js) return 0 ;;
++      esac
++    fi
++  done
++  return 1
++}
++
++# 收集受影响的文件及其行数
++HITS_FILE="$(mktemp -t diff-chat-XXXXXX.hits)"
++trap 'rm -f "$HITS_FILE"' EXIT
++
++while IFS= read -r f; do
++  [[ -z "$f" ]] && continue
++  if is_critical "$f"; then
++    # 计算 diff 行数(对 untracked 特殊处理)
++    if [[ "$GIT_DIFF_AGAINST" == "WORKTREE" ]] && ! git ls-files "$f" >/dev/null 2>&1; then
++      # untracked 文件:取 wc -l
++      if [[ -f "$f" ]]; then
++        added="$(wc -l < "$f" | tr -d ' ')"
++        printf '%s\t+%s\t%s\n' "$f" "$added" "(untracked)" >> "$HITS_FILE"
++      fi
++    else
++      # 标准 diff 统计
++      # shellcheck disable=SC2086
++      stats="$(git diff --numstat ${BASE_SHA}..${HEAD_SHA} -- "$f" 2>/dev/null || git diff --numstat HEAD -- "$f" 2>/dev/null || true)"
++      added="$(echo "$stats" | awk '{ gsub(/[^0-9]/, "", $1); print $1 }')"
++      removed="$(echo "$stats" | awk '{ gsub(/[^0-9]/, "", $2); print $2 }')"
++      : "${added:=0}"; : "${removed:=0}"
++      printf '%s\t+%s/-%s\t%s\n' "$f" "$added" "$removed" "${GIT_DIFF_AGAINST:-RANGE}" >> "$HITS_FILE"
++    fi
++  fi
++done <<< "$CHANGED"
++
++if [[ ! -s "$HITS_FILE" ]]; then
++  log_ok "chat 关键路径无 diff(共 $(echo "$CHANGED" | wc -l | tr -d ' ') 个文件被改,但不在 chat 关键列表)"
++  exit 0
++fi
++
++# --- 命中,报告并 exit 1 ---
++log_warn "⚠️  chat 路径有改动,需在 PR 描述里贴 chat-regression-baseline.txt 对比结果"
++echo
++echo "以下是受影响的 chat 关键路径文件(改动大小 = +/-行):"
++echo "------------------------------------------------------------"
++cat "$HITS_FILE" | column -t -s $'\t' 2>/dev/null || cat "$HITS_FILE"
++echo "------------------------------------------------------------"
++echo
++echo "建议(来自 design.md D-7.1 / tasks.md §Batch 5.5):"
++echo "  - 解释为何必须改 chat 路径(例如:Batch 2 schema 加列 必须)"
++echo "  - 在 PR 描述贴 baseline 对比:'此次 baseline vs 上次 baseline'"
++echo "  - 跑一次 chat 端到端验证(开 chat session 发一条消息 + 回放)"
++echo
++exit 1
+diff --git a/scripts/regression-chat.sh b/scripts/regression-chat.sh
+new file mode 100755
+index 0000000..e83d3e7
+--- /dev/null
++++ b/scripts/regression-chat.sh
+@@ -0,0 +1,197 @@
++#!/usr/bin/env bash
++# scripts/regression-chat.sh — chat 路径回归基线(本变更前置,影响所有 Batch)
++#
++# 用法(从仓库根目录跑):
++#   ./scripts/regression-chat.sh           # 跑真测试,写 chat-regression-baseline.txt
++#   ./scripts/regression-chat.sh --dry-run # 打印基线格式(全 0),不跑测试
++#   ./scripts/regression-chat.sh -h        # 帮助
++#
++# 输出:
++#   写 chat-regression-baseline.txt(5 个空格分隔字段):
++#     <commit_sha> <ISO_date> <pass_count> <fail_count> <elapsed_ms>
++#   stdout 也打印同一行(便于人类阅读)
++#
++# 退出码:
++#   0  所有测试通过
++#   1  有失败 / 输入错误 / 缺依赖(node/tsx)
++#
++# 与回归门禁的关系(Batch 5.5):
++#   跑本脚本两次(变更前后),diff 两次输出,pass/fail 数必须一致。
++#
++# 实现要点:
++#   - 必须从仓库根目录跑(server/**/*.test.{ts,js} globs 才有效)
++#   - 使用 tsx --test 而非裸 node --test,以支持 @/ 路径别名(server/tsconfig.json)
++#   - --dry-run 模式:即使 chat-regression-baseline.txt 已存在,优先读取(用于重基线协议)
++
++set -euo pipefail
++
++PROG_NAME="$(basename "$0")"
++readonly PROG_NAME
++
++# --- 颜色输出辅助(若 stdout 是 TTY) ---
++if [[ -t 1 ]]; then
++  C_RESET='\033[0m'
++  C_RED='\033[31m'
++  C_GREEN='\033[32m'
++  C_YELLOW='\033[33m'
++  C_BLUE='\033[34m'
++else
++  C_RESET='' C_RED='' C_GREEN='' C_YELLOW='' C_BLUE=''
++fi
++
++log_info()  { printf "${C_BLUE}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_ok()    { printf "${C_GREEN}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_warn()  { printf "${C_YELLOW}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*"; }
++log_err()   { printf "${C_RED}[%s]${C_RESET} %s\n" "$PROG_NAME" "$*" >&2; }
++
++usage() {
++  cat <<EOF
++Usage: $PROG_NAME [--dry-run] [-h|--help]
++
++Options:
++  --dry-run     只打印基线格式(全 0 值),不跑测试,也不写 baseline 文件
++  -h, --help    显示本帮助
++
++Environment:
++  REGRESSION_BASELINE_FILE   自定义输出路径(默认 ./chat-regression-baseline.txt)
++
++行为:
++  跑 'tsx --test --tsconfig server/tsconfig.json "server/**/*.test.{ts,js}" "server/*.test.{ts,js}"'
++  提取 pass / fail 计数与耗时,写一行到 baseline 文件(5 个空格分隔字段)。
++  退出码 0 当且仅当全部 pass。
++
++必须从仓库根目录跑(server globs 才有效)。
++EOF
++}
++
++# --- 参数解析 ---
++DRY_RUN="false"
++while [[ $# -gt 0 ]]; do
++  case "$1" in
++    --dry-run)   DRY_RUN="true"; shift ;;
++    -h|--help)   usage; exit 0 ;;
++    --nonsense*) log_err "unknown flag: $1"; usage; exit 2 ;;
++    -*)          log_err "unknown flag: $1"; usage; exit 2 ;;
++    *)           log_err "unexpected positional arg: $1"; usage; exit 2 ;;
++  esac
++done
++
++# --- 必须在仓库根目录 ---
++if [[ ! -d "server" ]] || [[ ! -f "server/tsconfig.json" ]] || [[ ! -d ".git" ]]; then
++  log_err "请在仓库根目录运行(需要 server/、server/tsconfig.json、.git/)"
++  exit 1
++fi
++
++BASELINE_FILE="${REGRESSION_BASELINE_FILE:-chat-regression-baseline.txt}"
++readonly BASELINE_FILE
++readonly DRY_RUN
++
++# --- dry-run 模式 ---
++if [[ "$DRY_RUN" == "true" ]]; then
++  if [[ -f "$BASELINE_FILE" ]]; then
++    # 重基线协议:已存在的 baseline 直接打印(只打印内容到 stdout)
++    cat "$BASELINE_FILE"
++    exit 0
++  fi
++
++  # 计算 dummy 值(全 0)
++  COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "0000000000000000000000000000000000000000")"
++  ISO_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
++  LINE="${COMMIT_SHA} ${ISO_DATE} 0 0 0"
++  echo "$LINE"
++  exit 0
++fi
++
++# --- 真跑测试 ---
++log_info "开始 chat 路径回归(从仓库根)"
++log_info "baseline 文件: ${BASELINE_FILE}"
++
++# 检查依赖
++if ! command -v node >/dev/null 2>&1; then
++  log_err "node 不在 PATH 中"
++  exit 1
++fi
++
++# tsx 在 node_modules/.bin 里
++if [[ -x "node_modules/.bin/tsx" ]]; then
++  TSX=("node_modules/.bin/tsx")
++elif command -v tsx >/dev/null 2>&1; then
++  TSX=("tsx")
++elif command -v npx >/dev/null 2>&1; then
++  TSX=("npx" "--yes" "tsx")
++else
++  log_err "tsx 不可用(尝试 npm i -D tsx 或 npm ci)"
++  exit 1
++fi
++
++now_ms() {
++  # Cross-platform millisecond timestamp:
++  #  - GNU date: date +%s%3N (Linux)
++  #  - macOS:    use python3 fallback(busybox / BSD date 不支持 %3N)
++  local val
++  val="$(date +%s%3N 2>/dev/null || true)"
++  if [[ "$val" == *N* || -z "$val" ]]; then
++    if command -v python3 >/dev/null 2>&1; then
++      val="$(python3 -c 'import time; print(int(time.time()*1000))' 2>/dev/null || echo "")"
++    fi
++  fi
++  if [[ -z "$val" || "$val" == *N* ]]; then
++    # Last resort:seconds × 1000
++    val="$(($(date +%s) * 1000))"
++  fi
++  echo "$val"
++}
++
++# 跑测试,允许失败但需捕获输出
++log_info "跑 tsx --test(可能耗时数秒到数十秒)..."
++TMP_OUT="$(mktemp -t regression-chat-XXXXXX.log)"
++START_MS="$(now_ms)"
++set +e
++"${TSX[@]}" --test --tsconfig server/tsconfig.json \
++  "server/**/*.test.{ts,js}" \
++  "server/*.test.{ts,js}" \
++  2>&1 | tee "$TMP_OUT"
++TEST_EXIT=${PIPESTATUS[0]}
++set -e
++
++END_MS="$(now_ms)"
++ELAPSED_MS=$((END_MS - START_MS))
++
++# 解析最后的汇总行(取最后一次出现,避免被 individual test 文件的同名行干扰)
++# node --test TAP 输出的最后形如:
++#   ℹ tests 79
++#   ℹ pass 78
++#   ℹ fail 1
++# 我们使用 awk:把每一列数字取 max。
++PASS_COUNT="$(grep -E '^ℹ +(tests|pass)' "$TMP_OUT" | awk '/pass/ { gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
++TESTS_COUNT="$(grep -E '^ℹ +tests' "$TMP_OUT" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
++FAIL_COUNT="$(grep -E '^ℹ +fail' "$TMP_OUT" | awk '{ gsub(/[^0-9]/, "", $NF); sum += $NF } END { print sum+0 }')"
++
++# 兜底:若断言失败,我们认为运行整个失败
++if [[ $TEST_EXIT -ne 0 ]]; then
++  log_warn "测试进程返回非零(exit=$TEST_EXIT)"
++fi
++
++# 安全值
++: "${PASS_COUNT:=0}"
++: "${FAIL_COUNT:=0}"
++: "${TESTS_COUNT:=0}"
++
++COMMIT_SHA="$(git rev-parse HEAD 2>/dev/null || echo "unknown")"
++ISO_DATE="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
++
++LINE="${COMMIT_SHA} ${ISO_DATE} ${PASS_COUNT} ${FAIL_COUNT} ${ELAPSED_MS}"
++echo "$LINE"
++echo "$LINE" > "$BASELINE_FILE"
++
++# 清理
++rm -f "$TMP_OUT"
++
++# 退出码:FAIL_COUNT > 0 或 TEST_EXIT != 0 → 1
++if [[ "$FAIL_COUNT" -gt 0 ]] || [[ $TEST_EXIT -ne 0 ]] || [[ "$TESTS_COUNT" -eq 0 ]]; then
++  log_err "❌ chat 路径回归失败: ${FAIL_COUNT} failed / ${PASS_COUNT} passed / total=${TESTS_COUNT}"
++  exit 1
++fi
++
++log_ok "✅ chat 路径回归通过: ${PASS_COUNT} passed (baseline written to ${BASELINE_FILE})"
++exit 0
+diff --git a/scripts/tests/diff-chat-impact.test.ts b/scripts/tests/diff-chat-impact.test.ts
+new file mode 100644
+index 0000000..31cae69
+--- /dev/null
++++ b/scripts/tests/diff-chat-impact.test.ts
+@@ -0,0 +1,144 @@
++/**
++ * diff-chat-impact.sh 行为的契约测试。
++ */
++
++import assert from 'node:assert/strict';
++import { execFileSync, spawnSync } from 'node:child_process';
++import {
++  existsSync,
++  readFileSync,
++  writeFileSync,
++} from 'node:fs';
++import path from 'node:path';
++import { fileURLToPath } from 'node:url';
++import test from 'node:test';
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++const REPO_ROOT = path.resolve(__dirname, '..', '..');
++const SCRIPT = path.join(REPO_ROOT, 'scripts', 'diff-chat-impact.sh');
++
++function runScript(
++  args: string[],
++  options: { cwd?: string; env?: Record<string, string> } = {},
++): { status: number | null; stdout: string; stderr: string } {
++  const result = spawnSync('bash', [SCRIPT, ...args], {
++    cwd: options.cwd ?? REPO_ROOT,
++    env: { ...process.env, ...options.env },
++    encoding: 'utf8',
++    timeout: 60_000,
++  });
++  return {
++    status: result.status,
++    stdout: result.stdout ?? '',
++    stderr: result.stderr ?? '',
++  };
++}
++
++function git(cwd: string, args: string[]): string {
++  return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
++}
++
++test('preflight: scripts/diff-chat-impact.sh 已存在', () => {
++  assert.equal(existsSync(SCRIPT), true, `expected script at ${SCRIPT}`);
++});
++
++test('zero-diff (BASE_SHA=HEAD_SHA): exit 0', () => {
++  const sha = git(REPO_ROOT, ['rev-parse', 'HEAD']);
++  const result = runScript([], { env: { BASE_SHA: sha, HEAD_SHA: sha } });
++  assert.equal(
++    result.status,
++    0,
++    `expected exit 0, got ${result.status}\nstdout: ${result.stdout}\nstderr: ${result.stderr}`,
++  );
++});
++
++test('critical 文件被改 → exit 1 且提示含该文件路径', () => {
++  // 策略:用临时分支 + 改文件 + commit,然后 BASE=HEAD~1, HEAD=HEAD
++  // 严格用 try/finally 恢复(在任何异常路径下也恢复)
++  const branch = `test/diff-chat-impact-${Date.now()}`;
++  const criticalFile = path.join(
++    REPO_ROOT,
++    'server/modules/websocket/services/chat-websocket.service.ts',
++  );
++  let originalContent: string | null = null;
++  let createdBranch = false;
++
++  function restoreEverything() {
++    // 还原文件,切回 main,删除分支
++    try {
++      if (originalContent !== null) {
++        writeFileSync(criticalFile, originalContent);
++      }
++      git(REPO_ROOT, ['checkout', '--', criticalFile]);
++    } catch {
++      // ignore
++    }
++    try {
++      git(REPO_ROOT, ['checkout', 'main']);
++    } catch {
++      // ignore
++    }
++    if (createdBranch) {
++      try {
++        git(REPO_ROOT, ['branch', '-D', branch]);
++      } catch {
++        // ignore
++      }
++    }
++  }
++
++  try {
++    try {
++      git(REPO_ROOT, ['branch', '-D', branch]);
++    } catch {
++      // ignore
++    }
++    git(REPO_ROOT, ['checkout', '-b', branch]);
++    createdBranch = true;
++
++    originalContent = readFileSync(criticalFile, 'utf8');
++    writeFileSync(
++      criticalFile,
++      `${originalContent}\n// touch: diff-chat-impact test ${new Date().toISOString()}\n`,
++    );
++    git(REPO_ROOT, ['add', criticalFile]);
++    git(REPO_ROOT, ['commit', '-m', 'test(dummy): for diff-chat-impact']);
++
++    const headSha = git(REPO_ROOT, ['rev-parse', 'HEAD']);
++    // 如果是 initial commit,就没 HEAD~1;此时这个测试无法跑,跳过
++    let baseSha: string;
++    try {
++      baseSha = git(REPO_ROOT, ['rev-parse', 'HEAD~1']);
++    } catch {
++      // skip
++      return;
++    }
++
++    const result = runScript([], {
++      env: { BASE_SHA: baseSha, HEAD_SHA: headSha },
++    });
++    assert.equal(result.status, 1, 'should exit 1 when critical file changed');
++    const combined = result.stdout + result.stderr;
++    assert.ok(
++      /chat-websocket\.service\.ts/.test(combined),
++      `should mention the modified file: ${combined}`,
++    );
++  } finally {
++    restoreEverything();
++  }
++});
++
++test('未知 flag → exit 非 0', () => {
++  const result = runScript(['--nonsense-xyz-flag']);
++  assert.notEqual(result.status, 0);
++});
++
++test('缺 BASE_SHA / HEAD_SHA → 提示并 exit 非 0', () => {
++  const result = runScript([], { env: { BASE_SHA: '', HEAD_SHA: '' } });
++  const combined = result.stdout + result.stderr;
++  assert.ok(
++    result.status !== 0 || /BASE_SHA|HEAD_SHA|缺少|required/i.test(combined),
++    `expected error or non-zero exit: status=${result.status} out=${combined}`,
++  );
++});
+diff --git a/scripts/tests/regression-chat.test.ts b/scripts/tests/regression-chat.test.ts
+new file mode 100644
+index 0000000..b94be7f
+--- /dev/null
++++ b/scripts/tests/regression-chat.test.ts
+@@ -0,0 +1,113 @@
++/**
++ * regression-chat.sh 行为的契约测试。
++ *
++ * 运行方式(从仓库根目录执行):
++ *   node_modules/.bin/tsx --test --tsconfig server/tsconfig.json scripts/tests/regression-chat.test.ts
++ *
++ * 设计原则:
++ * - 用文件路径直接指到被测脚本(默认 ./scripts/regression-chat.sh)
++ * - 每次子进程都在仓库根目录跑(因为脚本校验必须在仓库根执行)
++ * - 只测 dry-run / --help / 未知 flag 这种纯逻辑路径;完整路径留给 CI
++ */
++
++import assert from 'node:assert/strict';
++import { spawnSync } from 'node:child_process';
++import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
++import path from 'node:path';
++import { fileURLToPath } from 'node:url';
++import test from 'node:test';
++
++const __filename = fileURLToPath(import.meta.url);
++const __dirname = path.dirname(__filename);
++const REPO_ROOT = path.resolve(__dirname, '..', '..');
++const SCRIPT = path.join(REPO_ROOT, 'scripts', 'regression-chat.sh');
++
++function runScript(args: string[]): { status: number | null; stdout: string; stderr: string } {
++  const result = spawnSync('bash', [SCRIPT, ...args], {
++    cwd: REPO_ROOT,
++    encoding: 'utf8',
++    timeout: 60_000,
++  });
++  return {
++    status: result.status,
++    stdout: result.stdout ?? '',
++    stderr: result.stderr ?? '',
++  };
++}
++
++test('preflight: scripts/regression-chat.sh 已存在', () => {
++  // 哨兵:开发时若失败说明脚本还没创建
++  assert.equal(existsSync(SCRIPT), true, `expected script at ${SCRIPT}`);
++});
++
++test('--dry-run 输出基线格式(5 个空格分隔字段)且 exit 0', () => {
++  const result = runScript(['--dry-run']);
++  assert.equal(result.status, 0, `stderr: ${result.stderr}\nstdout: ${result.stdout}`);
++  const trimmed = result.stdout.trim();
++  const parts = trimmed.split(/\s+/);
++  // 格式: <commit_sha> <ISO_date> <pass_count> <fail_count> <elapsed_ms>
++  assert.equal(parts.length, 5, `expected 5 fields, got: ${trimmed}`);
++  // commit SHA 是 40 字符 hex(允许 unknown 兜底)
++  assert.match(parts[0], /^[0-9a-f]{40}$|unknown/, `commit_sha format: ${parts[0]}`);
++  // ISO date 是 YYYY-MM-DDTHH:MM:SSZ 形态
++  assert.match(parts[1], /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/, `ISO date format: ${parts[1]}`);
++  // counts 与 elapsed 是非负整数
++  assert.match(parts[2], /^\d+$/, `pass_count: ${parts[2]}`);
++  assert.match(parts[3], /^\d+$/, `fail_count: ${parts[3]}`);
++  assert.match(parts[4], /^\d+$/, `elapsed_ms: ${parts[4]}`);
++});
++
++test('--help / -h 输出用法且 exit 0', () => {
++  for (const flag of ['--help', '-h']) {
++    const result = runScript([flag]);
++    assert.equal(result.status, 0, `${flag} should exit 0, stderr: ${result.stderr}`);
++    assert.match(result.stdout, /Usage|--dry-run|--help/, `usage should be printed for ${flag}`);
++  }
++});
++
++test('未知 flag → exit 非 0 且 stderr 说明', () => {
++  const result = runScript(['--nonsense-flag-xyz']);
++  assert.notEqual(result.status, 0);
++  const out = result.stdout + result.stderr;
++  assert.match(out, /unknown|invalid|Unknown|unknown flag|用法/, `should report unknown flag: ${out}`);
++});
++
++test('--dry-run 在 baseline 文件已存在时直接 cat 且不修改它', () => {
++  // 准备:在仓库根放一个固定的 baseline,然后跑 --dry-run,验证内容不变
++  const baselinePath = path.join(REPO_ROOT, 'chat-regression-baseline.txt');
++  const bakPath = `${baselinePath}.bak`;
++  const existed = existsSync(baselinePath);
++  let existedContent: string | null = null;
++  if (existed) {
++    existedContent = readFileSync(baselinePath, 'utf8');
++    renameSync(baselinePath, bakPath);
++  }
++  try {
++    const FAKE = 'b'.repeat(40) + ' 2026-07-03T00:00:00Z 12 0 500';
++    writeFileSync(baselinePath, FAKE);
++    const result = runScript(['--dry-run']);
++    assert.equal(result.status, 0);
++    assert.equal(
++      readFileSync(baselinePath, 'utf8'),
++      FAKE,
++      'dry-run must not modify existing baseline',
++    );
++    assert.match(result.stdout, /b{40}/, 'dry-run should print baseline content to stdout');
++  } finally {
++    if (existed && existedContent !== null) {
++      writeFileSync(baselinePath, existedContent);
++      renameSync(baselinePath, baselinePath); // no-op safety
++    } else {
++      // 清理 fake
++      try {
++        require('node:fs').unlinkSync(baselinePath);
++      } catch {
++        // ignore
++      }
++    }
++    // 还原 bak
++    if (existed && existedContent !== null && existsSync(bakPath)) {
++      renameSync(bakPath, baselinePath);
++    }
++  }
++});

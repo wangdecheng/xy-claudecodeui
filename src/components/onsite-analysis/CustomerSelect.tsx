@@ -65,15 +65,12 @@ export default function CustomerSelect({
           {t('onsite:wizard.customerPlaceholder')}
         </option>
         {customers.map((c) => {
-          // label 自带「（」/「(」 或 label === branch 时不附加后缀;
-          // branch === null 时附加「(无三平台分支)」标记
-          const hasInline = /[（(]/.test(c.label) || c.label === c.branch;
+          // 后缀规则:branch === null → 附加「(无三平台分支)」;否则总是附加「（branch）」
+          // (即使 label 已含括号,仍附加分支,便于一眼看出对应分支)
           const suffix =
             c.branch === null
-              ? ` (${t('onsite:wizard.noThirdParty')})`
-              : hasInline
-                ? ''
-                : `（${c.branch}）`;
+              ? ` (${t('onsite:wizard.noThirdParty', { defaultValue: '无三平台分支' })})`
+              : `（${c.branch}）`;
           return (
             <option key={c.label} value={c.label}>
               {c.label}

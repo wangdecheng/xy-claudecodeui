@@ -45,6 +45,15 @@ export class FutureDateError extends Error {
   }
 }
 
+export class DescriptionRequiredError extends Error {
+  readonly code = 'DESCRIPTION_REQUIRED';
+
+  constructor() {
+    super('问题描述不能为空');
+    this.name = 'DescriptionRequiredError';
+  }
+}
+
 export type CreateProblemInput = {
   customer: string;
   third_bridge_branch: string | null;
@@ -53,8 +62,8 @@ export type CreateProblemInput = {
   cwd: string;
   /** YYYY-MM-DD; if absent, defaults to today. Future dates are rejected. */
   date?: string;
-  /** Optional problem title (≤80 chars). Backend truncates defensively. */
-  title?: string;
+  /** 必填:问题描述(≤2000 字符)。空字符串会抛 DescriptionRequiredError。 */
+  description: string;
 };
 
 export type ProblemRecord = {
@@ -66,7 +75,7 @@ export type ProblemRecord = {
   status: string;
   cwd: string;
   problem_json_path: string | null;
-  title?: string | null;
+  description: string;
 };
 
 export type ProblemListItem = ProblemRecord & {
@@ -139,6 +148,13 @@ export const problemService = {
     const root = resolveOnsiteRoot();
     assertCwdUnderRoot(input.cwd, root);
 
+    // 必填:问题描述
+    const trimmedDescription = (input.description ?? '').trim();
+    if (trimmedDescription.length === 0) {
+      throw new DescriptionRequiredError();
+    }
+    const storedDescription = trimmedDescription.slice(0, 2000);
+
     const today = new Date();
     let yyyymmdd = formatYyyymmdd(today);
 
@@ -162,11 +178,6 @@ export const problemService = {
 
     // 数据库选「其他」(value=other)时存 null,问题进 pending_info 等待补充
     const storedDatabase = input.database === 'other' ? null : input.database;
-    // title 截断到 80 字符(防御性,前端已校验)
-    const storedTitle =
-      typeof input.title === 'string' && input.title.length > 0
-        ? input.title.slice(0, 80)
-        : null;
 
     const problemJsonPath = path.join(dirPath, 'problem.json');
     const record: ProblemRecord = {
@@ -178,7 +189,7 @@ export const problemService = {
       status: 'pending_info',
       cwd: dirPath,
       problem_json_path: problemJsonPath,
-      title: storedTitle,
+      description: storedDescription,
     };
 
     const jsonPayload = {
@@ -190,7 +201,7 @@ export const problemService = {
       status: record.status,
       cwd: record.cwd,
       problem_json_path: record.problem_json_path,
-      title: storedTitle,
+      description: storedDescription,
       created_at: today.toISOString(),
     };
     await writeFile(problemJsonPath, JSON.stringify(jsonPayload, null, 2), 'utf8');
@@ -205,7 +216,7 @@ export const problemService = {
         status: record.status,
         cwd: record.cwd,
         problem_json_path: record.problem_json_path,
-        title: storedTitle,
+        description: storedDescription,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);

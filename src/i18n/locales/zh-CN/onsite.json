@@ -26,9 +26,9 @@
     "submit": "创建问题",
     "createSuccess": "问题创建成功",
     "createFailed": "创建失败,请稍后重试",
-    "titleField": "问题主标题(可选)",
-    "titlePlaceholder": "如:第三方登录失败",
-    "titleTooLong": "标题不能超过 80 字符"
+    "descriptionField": "问题描述",
+    "descriptionPlaceholder": "尽量精确:大概时间点、用户、碰到了什么问题",
+    "descriptionRequired": "问题描述为必填项"
   },
   "chat": {
     "userRole": "现场反馈",

@@ -1,0 +1,2341 @@
+# Review package: 46039b6..b6ef14def5f982ec125ad220465f71a9bd92a94a
+
+## Commits
+b6ef14d feat(onsite): GET /api/onsite/config route
+a3ab84d feat(onsite): ConfigService mtime watch and hot-reload
+6ecbb22 feat(onsite): add config schema and ConfigService skeleton
+
+## Files changed
+ config/discipline-words.json                       |  20 +
+ config/json-schemas/customer-analysis.schema.json  |  68 ++
+ package-lock.json                                  | 766 ++++++++++++++++++++-
+ package.json                                       |   2 +
+ server/index.js                                    |  12 +
+ server/modules/onsite-analysis/config.service.ts   | 309 +++++++++
+ server/modules/onsite-analysis/onsite.routes.ts    |  32 +
+ .../onsite-analysis/tests/config.route.test.ts     | 102 +++
+ .../onsite-analysis/tests/config.service.test.ts   | 113 +++
+ .../tests/config.service.watch.test.ts             | 182 +++++
+ .../tests/fixtures/bad-first-not-null.json         |  10 +
+ .../tests/fixtures/good-minimal.json               |   9 +
+ 12 files changed, 1614 insertions(+), 11 deletions(-)
+
+## Diff
+diff --git a/config/discipline-words.json b/config/discipline-words.json
+new file mode 100644
+index 0000000..43fc396
+--- /dev/null
++++ b/config/discipline-words.json
+@@ -0,0 +1,20 @@
++{
++  "_comment": "软化词中英文对照表 — 用于根因结论纪律审计（onsite.discipline.softening_warn）。UI 标注 + 后端 422 阻断；新增词条向后兼容。",
++  "words": [
++    "可能",
++    "也许",
++    "大概",
++    "或许",
++    "似乎",
++    "看起来像",
++    "应该是",
++    "估计是",
++    "maybe",
++    "perhaps",
++    "probably",
++    "might",
++    "could be",
++    "looks like",
++    "likely"
++  ]
++}
+\ No newline at end of file
+diff --git a/config/json-schemas/customer-analysis.schema.json b/config/json-schemas/customer-analysis.schema.json
+new file mode 100644
+index 0000000..e9f6b06
+--- /dev/null
++++ b/config/json-schemas/customer-analysis.schema.json
+@@ -0,0 +1,68 @@
++{
++  "$schema": "http://json-schema.org/draft-07/schema#",
++  "$id": "https://cloudcli.local/schemas/customer-analysis.schema.json",
++  "title": "CustomerOnsiteAnalysisConfig",
++  "description": "客户现场问题分析系统 — 新建向导下拉驱动配置（customer + iteration）。首项必须是「不涉及三方对接」且 branch=null。branch 字段允许三种形态：null、master_/release_ 前缀的 Git 分支名、或者短标识符（如 zgj_565939、sinopec、sse 等）。配置是单一真实来源 — UI 不允许手动输入。",
++  "type": "object",
++  "required": ["customers", "iterations"],
++  "additionalProperties": true,
++  "properties": {
++    "customers": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "type": "object",
++        "required": ["label", "branch"],
++        "additionalProperties": true,
++        "properties": {
++          "label": {
++            "type": "string",
++            "minLength": 1,
++            "description": "客户名显示文本"
++          },
++          "branch": {
++            "description": "关联的 Git 分支或标识符：null / master_xxx / release_xxx / 短标识符。",
++            "oneOf": [
++              { "type": "null" },
++              {
++                "type": "string",
++                "minLength": 1,
++                "pattern": "^[A-Za-z0-9_][A-Za-z0-9_.-]*$",
++                "description": "分支名/标识符（仅允许字母数字下划线点中划线，必须以字母数字下划线开头）"
++              }
++            ]
++          }
++        }
++      }
++    },
++    "iterations": {
++      "type": "array",
++      "minItems": 1,
++      "items": {
++        "type": "string",
++        "pattern": "^(master|release)_.+",
++        "description": "迭代分支名，形如 release_5.2_3.2_20260327 或 master_5.2_3.2"
++      }
++    }
++  },
++  "allOf": [
++    {
++      "description": "customers[0] 必须是「不涉及三方对接」且 branch=null",
++      "properties": {
++        "customers": {
++          "items": [
++            {
++              "type": "object",
++              "required": ["label", "branch"],
++              "additionalProperties": true,
++              "properties": {
++                "label": { "const": "不涉及三方对接" },
++                "branch": { "type": "null" }
++              }
++            }
++          ]
++        }
++      }
++    }
++  ]
++}
+\ No newline at end of file
+diff --git a/package-lock.json b/package-lock.json
+index 715e8fb..8957f29 100644
+--- a/package-lock.json
++++ b/package-lock.json
+@@ -1,18 +1,18 @@
+ {
+-  "name": "@cloudcli-ai/cloudcli",
++  "name": "xy-claudecodeui",
+   "version": "1.35.1",
+   "lockfileVersion": 3,
+   "requires": true,
+   "packages": {
+     "": {
+-      "name": "@cloudcli-ai/cloudcli",
++      "name": "xy-claudecodeui",
+       "version": "1.35.1",
+       "hasInstallScript": true,
+       "license": "AGPL-3.0-or-later",
+       "dependencies": {
+         "@anthropic-ai/claude-agent-sdk": "^0.3.165",
+         "@codemirror/lang-css": "^6.3.1",
+         "@codemirror/lang-html": "^6.4.9",
+         "@codemirror/lang-javascript": "^6.2.4",
+         "@codemirror/lang-json": "^6.0.1",
+         "@codemirror/lang-markdown": "^6.3.3",
+@@ -76,20 +76,21 @@
+         "@commitlint/cli": "^20.5.0",
+         "@commitlint/config-conventional": "^20.5.0",
+         "@eslint/js": "^9.39.3",
+         "@release-it/conventional-changelog": "^10.0.5",
+         "@types/better-sqlite3": "^7.6.13",
+         "@types/cross-spawn": "^6.0.6",
+         "@types/express": "^5.0.6",
+         "@types/node": "^22.19.7",
+         "@types/react": "^18.2.43",
+         "@types/react-dom": "^18.2.17",
++        "@types/supertest": "^7.2.0",
+         "@types/ws": "^8.18.1",
+         "@vitejs/plugin-react": "^4.6.0",
+         "auto-changelog": "^2.5.0",
+         "autoprefixer": "^10.4.16",
+         "concurrently": "^8.2.2",
+         "cross-env": "^10.1.0",
+         "electron": "^38.0.0",
+         "electron-builder": "^26.15.3",
+         "eslint": "^9.39.3",
+         "eslint-import-resolver-typescript": "^4.4.4",
+@@ -100,20 +101,21 @@
+         "eslint-plugin-react-refresh": "^0.5.2",
+         "eslint-plugin-tailwindcss": "^3.18.2",
+         "eslint-plugin-unused-imports": "^4.4.1",
+         "globals": "^17.4.0",
+         "husky": "^9.1.7",
+         "lint-staged": "^16.3.2",
+         "node-gyp": "^10.0.0",
+         "postcss": "^8.4.32",
+         "release-it": "^19.0.5",
+         "sharp": "^0.34.2",
++        "supertest": "^7.2.2",
+         "tailwindcss": "^3.4.0",
+         "tsc-alias": "^1.8.16",
+         "tsx": "^4.21.0",
+         "typescript": "^5.9.3",
+         "typescript-eslint": "^8.56.1",
+         "vite": "^7.0.4"
+       },
+       "optionalDependencies": {
+         "@nut-tree-fork/nut-js": "^4.2.6",
+         "screenshot-desktop": "^1.15.4"
+@@ -580,20 +582,31 @@
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@babel/helper-string-parser": "^7.27.1",
+         "@babel/helper-validator-identifier": "^7.27.1"
+       },
+       "engines": {
+         "node": ">=6.9.0"
+       }
+     },
++    "node_modules/@borewit/text-codec": {
++      "version": "0.2.2",
++      "resolved": "https://registry.npmjs.org/@borewit/text-codec/-/text-codec-0.2.2.tgz",
++      "integrity": "sha512-DDaRehssg1aNrH4+2hnj1B7vnUGEjU6OIlyRdkMd0aUdIUvKXrJfXsy8LVtXAy7DRvYVluWbMspsRhz2lcW0mQ==",
++      "license": "MIT",
++      "optional": true,
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
+     "node_modules/@boundaries/elements": {
+       "version": "2.0.1",
+       "resolved": "https://registry.npmjs.org/@boundaries/elements/-/elements-2.0.1.tgz",
+       "integrity": "sha512-sAWO3D8PFP6pBXdxxW93SQi/KQqqhE2AAHo3AgWfdtJXwO6bfK6/wUN81XnOZk0qRC6vHzUEKhjwVD9dtDWvxg==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "eslint-import-resolver-node": "0.3.9",
+         "eslint-module-utils": "2.12.1",
+         "handlebars": "4.7.9",
+@@ -3112,20 +3125,30 @@
+         "@jimp/utils": "^0.22.12",
+         "any-base": "^1.1.0",
+         "buffer": "^5.2.0",
+         "exif-parser": "^0.1.12",
+         "file-type": "^16.5.4",
+         "isomorphic-fetch": "^3.0.0",
+         "pixelmatch": "^4.0.2",
+         "tinycolor2": "^1.6.0"
+       }
+     },
++    "node_modules/@jimp/file-ops": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/file-ops/-/file-ops-1.6.1.tgz",
++      "integrity": "sha512-T+gX6osHjprbDRad0/B71Evyre7ZdVY1z/gFGEG9Z8KOtZPKboWvPeP2UjbZYWQLy9UKCPQX1FNAnDiOPkJL7w==",
++      "license": "MIT",
++      "optional": true,
++      "engines": {
++        "node": ">=18"
++      }
++    },
+     "node_modules/@jimp/gif": {
+       "version": "0.22.12",
+       "resolved": "https://registry.npmjs.org/@jimp/gif/-/gif-0.22.12.tgz",
+       "integrity": "sha512-y6BFTJgch9mbor2H234VSjd9iwAhaNf/t3US5qpYIs0TSbAvM02Fbc28IaDETj9+4YB4676sz4RcN/zwhfu1pg==",
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12",
+         "gifwrap": "^0.10.1",
+         "omggif": "^1.0.9"
+@@ -3141,33 +3164,312 @@
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12",
+         "jpeg-js": "^0.4.4"
+       },
+       "peerDependencies": {
+         "@jimp/custom": ">=0.3.5"
+       }
+     },
++    "node_modules/@jimp/plugin-blur": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-blur/-/plugin-blur-1.6.1.tgz",
++      "integrity": "sha512-lIo7Tzp5jQu30EFFSK/phXANK3citKVEjepDjQ6ljHoIFtuMRrnybnmI2Md24ulvWlDaz+hh3n6qrMb8ydwhZQ==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/core": "1.6.1",
++        "@jimp/utils": "1.6.1"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/@jimp/core": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/core/-/core-1.6.1.tgz",
++      "integrity": "sha512-+BoKC5G6hkrSy501zcJ2EpfnllP+avPevcBfRcZe/CW+EwEfY6X1EZ8QWyT7NpDIvEEJb1fdJnMMfUnFkxmw9A==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/file-ops": "1.6.1",
++        "@jimp/types": "1.6.1",
++        "@jimp/utils": "1.6.1",
++        "await-to-js": "^3.0.0",
++        "exif-parser": "^0.1.12",
++        "file-type": "^21.3.3",
++        "mime": "3"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/@jimp/types": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/types/-/types-1.6.1.tgz",
++      "integrity": "sha512-leI7YbveTNi565m910XgIOwXyuu074H5qazAD1357HImJSv2hqxnWXpwxQbadGWZ7goZRYBDZy5lpqud0p7q5w==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "zod": "^3.23.8"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/@jimp/utils": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/utils/-/utils-1.6.1.tgz",
++      "integrity": "sha512-veFPRd93FCnS7AgmCkPgARVGoDRrJ9cm1ujuNyA+UfQ5VKbED2002sm5XfFLFwTsKC8j04heTrwe+tU1dluXOw==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/types": "1.6.1",
++        "tinycolor2": "^1.6.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/file-type": {
++      "version": "21.3.4",
++      "resolved": "https://registry.npmjs.org/file-type/-/file-type-21.3.4.tgz",
++      "integrity": "sha512-Ievi/yy8DS3ygGvT47PjSfdFoX+2isQueoYP1cntFW1JLYAuS4GD7NUPGg4zv2iZfV52uDyk5w5Z0TdpRS6Q1g==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/inflate": "^0.4.1",
++        "strtok3": "^10.3.4",
++        "token-types": "^6.1.1",
++        "uint8array-extras": "^1.4.0"
++      },
++      "engines": {
++        "node": ">=20"
++      },
++      "funding": {
++        "url": "https://github.com/sindresorhus/file-type?sponsor=1"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/mime": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/mime/-/mime-3.0.0.tgz",
++      "integrity": "sha512-jSCU7/VB1loIWBZe14aEYHU/+1UMEHoaO7qxCOVJOw9GgH72VAWppxNcjU+x9a2k3GSIBXNKxXQFqRvvZ7vr3A==",
++      "license": "MIT",
++      "optional": true,
++      "bin": {
++        "mime": "cli.js"
++      },
++      "engines": {
++        "node": ">=10.0.0"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/strtok3": {
++      "version": "10.3.5",
++      "resolved": "https://registry.npmjs.org/strtok3/-/strtok3-10.3.5.tgz",
++      "integrity": "sha512-ki4hZQfh5rX0QDLLkOCj+h+CVNkqmp/CMf8v8kZpkNVK6jGQooMytqzLZYUVYIZcFZ6yDB70EfD8POcFXiF5oA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/token": "^0.3.0"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/token-types": {
++      "version": "6.1.2",
++      "resolved": "https://registry.npmjs.org/token-types/-/token-types-6.1.2.tgz",
++      "integrity": "sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@borewit/text-codec": "^0.2.1",
++        "@tokenizer/token": "^0.3.0",
++        "ieee754": "^1.2.1"
++      },
++      "engines": {
++        "node": ">=14.16"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-blur/node_modules/zod": {
++      "version": "3.25.76",
++      "resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
++      "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
++      "license": "MIT",
++      "optional": true,
++      "funding": {
++        "url": "https://github.com/sponsors/colinhacks"
++      }
++    },
+     "node_modules/@jimp/plugin-circle": {
+       "version": "0.22.12",
+       "resolved": "https://registry.npmjs.org/@jimp/plugin-circle/-/plugin-circle-0.22.12.tgz",
+       "integrity": "sha512-SWVXx1yiuj5jZtMijqUfvVOJBwOifFn0918ou4ftoHgegc5aHWW5dZbYPjvC9fLpvz7oSlptNl2Sxr1zwofjTg==",
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12"
+       },
+       "peerDependencies": {
+         "@jimp/custom": ">=0.3.5"
+       }
+     },
++    "node_modules/@jimp/plugin-color": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-color/-/plugin-color-1.6.1.tgz",
++      "integrity": "sha512-LtUN1vAP+LRlZAtTNVhDRSiXx+26Kbz3zJaG6a5k59gQ95jgT5mknnF8lxkHcqJthM4MEk3/tPxkdJpEybyF/A==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/core": "1.6.1",
++        "@jimp/types": "1.6.1",
++        "@jimp/utils": "1.6.1",
++        "tinycolor2": "^1.6.0",
++        "zod": "^3.23.8"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/@jimp/core": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/core/-/core-1.6.1.tgz",
++      "integrity": "sha512-+BoKC5G6hkrSy501zcJ2EpfnllP+avPevcBfRcZe/CW+EwEfY6X1EZ8QWyT7NpDIvEEJb1fdJnMMfUnFkxmw9A==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/file-ops": "1.6.1",
++        "@jimp/types": "1.6.1",
++        "@jimp/utils": "1.6.1",
++        "await-to-js": "^3.0.0",
++        "exif-parser": "^0.1.12",
++        "file-type": "^21.3.3",
++        "mime": "3"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/@jimp/types": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/types/-/types-1.6.1.tgz",
++      "integrity": "sha512-leI7YbveTNi565m910XgIOwXyuu074H5qazAD1357HImJSv2hqxnWXpwxQbadGWZ7goZRYBDZy5lpqud0p7q5w==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "zod": "^3.23.8"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/@jimp/utils": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/utils/-/utils-1.6.1.tgz",
++      "integrity": "sha512-veFPRd93FCnS7AgmCkPgARVGoDRrJ9cm1ujuNyA+UfQ5VKbED2002sm5XfFLFwTsKC8j04heTrwe+tU1dluXOw==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/types": "1.6.1",
++        "tinycolor2": "^1.6.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/file-type": {
++      "version": "21.3.4",
++      "resolved": "https://registry.npmjs.org/file-type/-/file-type-21.3.4.tgz",
++      "integrity": "sha512-Ievi/yy8DS3ygGvT47PjSfdFoX+2isQueoYP1cntFW1JLYAuS4GD7NUPGg4zv2iZfV52uDyk5w5Z0TdpRS6Q1g==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/inflate": "^0.4.1",
++        "strtok3": "^10.3.4",
++        "token-types": "^6.1.1",
++        "uint8array-extras": "^1.4.0"
++      },
++      "engines": {
++        "node": ">=20"
++      },
++      "funding": {
++        "url": "https://github.com/sindresorhus/file-type?sponsor=1"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/mime": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/mime/-/mime-3.0.0.tgz",
++      "integrity": "sha512-jSCU7/VB1loIWBZe14aEYHU/+1UMEHoaO7qxCOVJOw9GgH72VAWppxNcjU+x9a2k3GSIBXNKxXQFqRvvZ7vr3A==",
++      "license": "MIT",
++      "optional": true,
++      "bin": {
++        "mime": "cli.js"
++      },
++      "engines": {
++        "node": ">=10.0.0"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/strtok3": {
++      "version": "10.3.5",
++      "resolved": "https://registry.npmjs.org/strtok3/-/strtok3-10.3.5.tgz",
++      "integrity": "sha512-ki4hZQfh5rX0QDLLkOCj+h+CVNkqmp/CMf8v8kZpkNVK6jGQooMytqzLZYUVYIZcFZ6yDB70EfD8POcFXiF5oA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/token": "^0.3.0"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/token-types": {
++      "version": "6.1.2",
++      "resolved": "https://registry.npmjs.org/token-types/-/token-types-6.1.2.tgz",
++      "integrity": "sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@borewit/text-codec": "^0.2.1",
++        "@tokenizer/token": "^0.3.0",
++        "ieee754": "^1.2.1"
++      },
++      "engines": {
++        "node": ">=14.16"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-color/node_modules/zod": {
++      "version": "3.25.76",
++      "resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
++      "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
++      "license": "MIT",
++      "optional": true,
++      "funding": {
++        "url": "https://github.com/sponsors/colinhacks"
++      }
++    },
+     "node_modules/@jimp/plugin-contain": {
+       "version": "0.22.12",
+       "resolved": "https://registry.npmjs.org/@jimp/plugin-contain/-/plugin-contain-0.22.12.tgz",
+       "integrity": "sha512-Eo3DmfixJw3N79lWk8q/0SDYbqmKt1xSTJ69yy8XLYQj9svoBbyRpSnHR+n9hOw5pKXytHwUW6nU4u1wegHNoQ==",
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12"
+       },
+       "peerDependencies": {
+@@ -3306,20 +3608,162 @@
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12",
+         "load-bmfont": "^1.4.1"
+       },
+       "peerDependencies": {
+         "@jimp/custom": ">=0.3.5",
+         "@jimp/plugin-blit": ">=0.3.5"
+       }
+     },
++    "node_modules/@jimp/plugin-rotate": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-rotate/-/plugin-rotate-1.6.1.tgz",
++      "integrity": "sha512-nOjVjbbj705B02ksysKnh0POAwEBXZtJ9zQ5qC+X7Tavl3JNn+P3BzQovbBxLPSbUSld6XID9z5ijin4PtOAUg==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/core": "1.6.1",
++        "@jimp/plugin-crop": "1.6.1",
++        "@jimp/plugin-resize": "1.6.1",
++        "@jimp/types": "1.6.1",
++        "@jimp/utils": "1.6.1",
++        "zod": "^3.23.8"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/@jimp/core": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/core/-/core-1.6.1.tgz",
++      "integrity": "sha512-+BoKC5G6hkrSy501zcJ2EpfnllP+avPevcBfRcZe/CW+EwEfY6X1EZ8QWyT7NpDIvEEJb1fdJnMMfUnFkxmw9A==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/file-ops": "1.6.1",
++        "@jimp/types": "1.6.1",
++        "@jimp/utils": "1.6.1",
++        "await-to-js": "^3.0.0",
++        "exif-parser": "^0.1.12",
++        "file-type": "^21.3.3",
++        "mime": "3"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/@jimp/types": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/types/-/types-1.6.1.tgz",
++      "integrity": "sha512-leI7YbveTNi565m910XgIOwXyuu074H5qazAD1357HImJSv2hqxnWXpwxQbadGWZ7goZRYBDZy5lpqud0p7q5w==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "zod": "^3.23.8"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/@jimp/utils": {
++      "version": "1.6.1",
++      "resolved": "https://registry.npmjs.org/@jimp/utils/-/utils-1.6.1.tgz",
++      "integrity": "sha512-veFPRd93FCnS7AgmCkPgARVGoDRrJ9cm1ujuNyA+UfQ5VKbED2002sm5XfFLFwTsKC8j04heTrwe+tU1dluXOw==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/types": "1.6.1",
++        "tinycolor2": "^1.6.0"
++      },
++      "engines": {
++        "node": ">=18"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/file-type": {
++      "version": "21.3.4",
++      "resolved": "https://registry.npmjs.org/file-type/-/file-type-21.3.4.tgz",
++      "integrity": "sha512-Ievi/yy8DS3ygGvT47PjSfdFoX+2isQueoYP1cntFW1JLYAuS4GD7NUPGg4zv2iZfV52uDyk5w5Z0TdpRS6Q1g==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/inflate": "^0.4.1",
++        "strtok3": "^10.3.4",
++        "token-types": "^6.1.1",
++        "uint8array-extras": "^1.4.0"
++      },
++      "engines": {
++        "node": ">=20"
++      },
++      "funding": {
++        "url": "https://github.com/sindresorhus/file-type?sponsor=1"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/mime": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/mime/-/mime-3.0.0.tgz",
++      "integrity": "sha512-jSCU7/VB1loIWBZe14aEYHU/+1UMEHoaO7qxCOVJOw9GgH72VAWppxNcjU+x9a2k3GSIBXNKxXQFqRvvZ7vr3A==",
++      "license": "MIT",
++      "optional": true,
++      "bin": {
++        "mime": "cli.js"
++      },
++      "engines": {
++        "node": ">=10.0.0"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/strtok3": {
++      "version": "10.3.5",
++      "resolved": "https://registry.npmjs.org/strtok3/-/strtok3-10.3.5.tgz",
++      "integrity": "sha512-ki4hZQfh5rX0QDLLkOCj+h+CVNkqmp/CMf8v8kZpkNVK6jGQooMytqzLZYUVYIZcFZ6yDB70EfD8POcFXiF5oA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@tokenizer/token": "^0.3.0"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/token-types": {
++      "version": "6.1.2",
++      "resolved": "https://registry.npmjs.org/token-types/-/token-types-6.1.2.tgz",
++      "integrity": "sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@borewit/text-codec": "^0.2.1",
++        "@tokenizer/token": "^0.3.0",
++        "ieee754": "^1.2.1"
++      },
++      "engines": {
++        "node": ">=14.16"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@jimp/plugin-rotate/node_modules/zod": {
++      "version": "3.25.76",
++      "resolved": "https://registry.npmjs.org/zod/-/zod-3.25.76.tgz",
++      "integrity": "sha512-gzUt/qt81nXsFGKIFcC3YnfEAx5NkunCfnDlvuBSSFS02bcXu4Lmea0AFIUwbLWxWPx3d9p8S5QoaujKcNQxcQ==",
++      "license": "MIT",
++      "optional": true,
++      "funding": {
++        "url": "https://github.com/sponsors/colinhacks"
++      }
++    },
+     "node_modules/@jimp/plugin-shadow": {
+       "version": "0.22.12",
+       "resolved": "https://registry.npmjs.org/@jimp/plugin-shadow/-/plugin-shadow-0.22.12.tgz",
+       "integrity": "sha512-FX8mTJuCt7/3zXVoeD/qHlm4YH2bVqBuWQHXSuBK054e7wFRnRnbSLPUqAwSeYP3lWqpuQzJtgiiBxV3+WWwTg==",
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12"
+       },
+       "peerDependencies": {
+@@ -3370,20 +3814,63 @@
+         "@jimp/plugin-rotate": "^0.22.12",
+         "@jimp/plugin-scale": "^0.22.12",
+         "@jimp/plugin-shadow": "^0.22.12",
+         "@jimp/plugin-threshold": "^0.22.12",
+         "timm": "^1.6.1"
+       },
+       "peerDependencies": {
+         "@jimp/custom": ">=0.3.5"
+       }
+     },
++    "node_modules/@jimp/plugins/node_modules/@jimp/plugin-blur": {
++      "version": "0.22.12",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-blur/-/plugin-blur-0.22.12.tgz",
++      "integrity": "sha512-S0vJADTuh1Q9F+cXAwFPlrKWzDj2F9t/9JAbUvaaDuivpyWuImEKXVz5PUZw2NbpuSHjwssbTpOZ8F13iJX4uw==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/utils": "^0.22.12"
++      },
++      "peerDependencies": {
++        "@jimp/custom": ">=0.3.5"
++      }
++    },
++    "node_modules/@jimp/plugins/node_modules/@jimp/plugin-color": {
++      "version": "0.22.12",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-color/-/plugin-color-0.22.12.tgz",
++      "integrity": "sha512-xImhTE5BpS8xa+mAN6j4sMRWaUgUDLoaGHhJhpC+r7SKKErYDR0WQV4yCE4gP+N0gozD0F3Ka1LUSaMXrn7ZIA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/utils": "^0.22.12",
++        "tinycolor2": "^1.6.0"
++      },
++      "peerDependencies": {
++        "@jimp/custom": ">=0.3.5"
++      }
++    },
++    "node_modules/@jimp/plugins/node_modules/@jimp/plugin-rotate": {
++      "version": "0.22.12",
++      "resolved": "https://registry.npmjs.org/@jimp/plugin-rotate/-/plugin-rotate-0.22.12.tgz",
++      "integrity": "sha512-9YNEt7BPAFfTls2FGfKBVgwwLUuKqy+E8bDGGEsOqHtbuhbshVGxN2WMZaD4gh5IDWvR+emmmPPWGgaYNYt1gA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@jimp/utils": "^0.22.12"
++      },
++      "peerDependencies": {
++        "@jimp/custom": ">=0.3.5",
++        "@jimp/plugin-blit": ">=0.3.5",
++        "@jimp/plugin-crop": ">=0.3.5",
++        "@jimp/plugin-resize": ">=0.3.5"
++      }
++    },
+     "node_modules/@jimp/png": {
+       "version": "0.22.12",
+       "resolved": "https://registry.npmjs.org/@jimp/png/-/png-0.22.12.tgz",
+       "integrity": "sha512-Mrp6dr3UTn+aLK8ty/dSKELz+Otdz1v4aAXzV5q53UDD2rbB5joKVJ/ChY310B+eRzNxIovbUF1KVrUsYdE8Hg==",
+       "license": "MIT",
+       "optional": true,
+       "dependencies": {
+         "@jimp/utils": "^0.22.12",
+         "pngjs": "^6.0.0"
+       },
+@@ -4680,20 +5167,43 @@
+       ],
+       "license": "Apache-2.0",
+       "optional": true,
+       "os": [
+         "win32"
+       ],
+       "engines": {
+         "node": ">=16"
+       }
+     },
++    "node_modules/@paralleldrive/cuid2": {
++      "version": "2.3.1",
++      "resolved": "https://registry.npmjs.org/@paralleldrive/cuid2/-/cuid2-2.3.1.tgz",
++      "integrity": "sha512-XO7cAxhnTZl0Yggq6jOgjiOHhbgcO4NqFqwSmQpjK3b6TEE6Uj/jfSk6wzYyemh3+I0sHirKSetjQwn5cZktFw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@noble/hashes": "^1.1.5"
++      }
++    },
++    "node_modules/@paralleldrive/cuid2/node_modules/@noble/hashes": {
++      "version": "1.8.0",
++      "resolved": "https://registry.npmjs.org/@noble/hashes/-/hashes-1.8.0.tgz",
++      "integrity": "sha512-jCs9ldd7NwzpgXDIf6P3+NrHh9/sD6CQdxHyjQI+h/6rDNo88ypBxxz45UDuZHz9r3tNz7N/VInSVoVdtXEI4A==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": "^14.21.3 || >=16"
++      },
++      "funding": {
++        "url": "https://paulmillr.com/funding/"
++      }
++    },
+     "node_modules/@peculiar/asn1-schema": {
+       "version": "2.8.0",
+       "resolved": "https://registry.npmjs.org/@peculiar/asn1-schema/-/asn1-schema-2.8.0.tgz",
+       "integrity": "sha512-7YT0U/ze0tF2QOBbE15gKZwy5tvgGyLRiRHLzhlbOpf7BT032oBSd0haZqXn5W6l26WLlu3dyxzjM+2638/z2Q==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@peculiar/utils": "^2.0.2",
+         "asn1js": "^3.0.10",
+         "tslib": "^2.8.1"
+@@ -5622,20 +6132,57 @@
+       "dependencies": {
+         "lodash.castarray": "^4.4.0",
+         "lodash.isplainobject": "^4.0.6",
+         "lodash.merge": "^4.6.2",
+         "postcss-selector-parser": "6.0.10"
+       },
+       "peerDependencies": {
+         "tailwindcss": ">=3.0.0 || insiders || >=4.0.0-alpha.20 || >=4.0.0-beta.1"
+       }
+     },
++    "node_modules/@tokenizer/inflate": {
++      "version": "0.4.1",
++      "resolved": "https://registry.npmjs.org/@tokenizer/inflate/-/inflate-0.4.1.tgz",
++      "integrity": "sha512-2mAv+8pkG6GIZiF1kNg1jAjh27IDxEPKwdGul3snfztFerfPGI1LjDezZp3i7BElXompqEtPmoPx6c2wgtWsOA==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "debug": "^4.4.3",
++        "token-types": "^6.1.1"
++      },
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
++    "node_modules/@tokenizer/inflate/node_modules/token-types": {
++      "version": "6.1.2",
++      "resolved": "https://registry.npmjs.org/token-types/-/token-types-6.1.2.tgz",
++      "integrity": "sha512-dRXchy+C0IgK8WPC6xvCHFRIWYUbqqdEIKPaKo/AcTUNzwLTK6AH7RjdLWsEZcAN/TBdtfUw3PYEgPr5VPr6ww==",
++      "license": "MIT",
++      "optional": true,
++      "dependencies": {
++        "@borewit/text-codec": "^0.2.1",
++        "@tokenizer/token": "^0.3.0",
++        "ieee754": "^1.2.1"
++      },
++      "engines": {
++        "node": ">=14.16"
++      },
++      "funding": {
++        "type": "github",
++        "url": "https://github.com/sponsors/Borewit"
++      }
++    },
+     "node_modules/@tokenizer/token": {
+       "version": "0.3.0",
+       "resolved": "https://registry.npmjs.org/@tokenizer/token/-/token-0.3.0.tgz",
+       "integrity": "sha512-OvjF+z51L3ov0OyAU0duzsYuvO01PH7x4t6DJx+guahgTnBHkhJdG7soQeTSFLWN3efnHyibZ4Z8l2EuWwJN3A==",
+       "license": "MIT",
+       "optional": true
+     },
+     "node_modules/@tootallnate/quickjs-emscripten": {
+       "version": "0.23.0",
+       "resolved": "https://registry.npmjs.org/@tootallnate/quickjs-emscripten/-/quickjs-emscripten-0.23.0.tgz",
+@@ -5736,20 +6283,27 @@
+     "node_modules/@types/connect": {
+       "version": "3.4.38",
+       "resolved": "https://registry.npmjs.org/@types/connect/-/connect-3.4.38.tgz",
+       "integrity": "sha512-K6uROf1LD88uDQqJCktA4yzL1YYAK6NgfsI0v/mTgyPKWsX1CnJ0XPSDhViejru1GcRkLWb8RlzFYJRqGUbaug==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/node": "*"
+       }
+     },
++    "node_modules/@types/cookiejar": {
++      "version": "2.1.5",
++      "resolved": "https://registry.npmjs.org/@types/cookiejar/-/cookiejar-2.1.5.tgz",
++      "integrity": "sha512-he+DHOWReW0nghN24E1WUqM0efK4kI9oTqDm6XmK8ZPe2djZ90BSNdGnIyCLzCPw7/pogPlGbzI2wHGGmi4O/Q==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/cross-spawn": {
+       "version": "6.0.6",
+       "resolved": "https://registry.npmjs.org/@types/cross-spawn/-/cross-spawn-6.0.6.tgz",
+       "integrity": "sha512-fXRhhUkG4H3TQk5dBhQ7m/JDdSNHKwR2BBia62lhwEIq9xGiQKLxd6LymNhn47SjXhsUEPmxi+PKw2OkW4LLjA==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/node": "*"
+       }
+     },
+@@ -5860,20 +6414,27 @@
+     },
+     "node_modules/@types/mdast": {
+       "version": "4.0.4",
+       "resolved": "https://registry.npmjs.org/@types/mdast/-/mdast-4.0.4.tgz",
+       "integrity": "sha512-kGaNbPh1k7AFzgpud/gMdvIm5xuECykRR+JnWKQno9TAXVa6WIVCGTPvYGekIDL4uwCZQSYbUxNBSb1aUo79oA==",
+       "license": "MIT",
+       "dependencies": {
+         "@types/unist": "*"
+       }
+     },
++    "node_modules/@types/methods": {
++      "version": "1.1.4",
++      "resolved": "https://registry.npmjs.org/@types/methods/-/methods-1.1.4.tgz",
++      "integrity": "sha512-ymXWVrDiCxTBE3+RIrrP533E70eA+9qu7zdWoHuOmGujkYtzf4HQF96b8nwHLqhuf4ykX61IGRIB38CC6/sImQ==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/@types/ms": {
+       "version": "2.1.0",
+       "resolved": "https://registry.npmjs.org/@types/ms/-/ms-2.1.0.tgz",
+       "integrity": "sha512-GsCCIZDE/p3i96vtEqx+7dBUGXrc7zeSK3wwPHIaRThS+9OhWIXRqzs4d6k1SVU8g91DrNRWxWUGhp5KXQb2VA==",
+       "license": "MIT"
+     },
+     "node_modules/@types/node": {
+       "version": "22.19.7",
+       "resolved": "https://registry.npmjs.org/@types/node/-/node-22.19.7.tgz",
+       "integrity": "sha512-MciR4AKGHWl7xwxkBa6xUGxQJ4VBOmPTF7sL+iGzuahOFaO0jHCsuEfS80pan1ef4gWId1oWOweIhrDEYLuaOw==",
+@@ -5964,20 +6525,44 @@
+       "version": "2.2.0",
+       "resolved": "https://registry.npmjs.org/@types/serve-static/-/serve-static-2.2.0.tgz",
+       "integrity": "sha512-8mam4H1NHLtu7nmtalF7eyBH14QyOASmcxHhSfEoRyr0nP/YdoesEtU+uSRvMe96TW/HPTtkoKqQLl53N7UXMQ==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "@types/http-errors": "*",
+         "@types/node": "*"
+       }
+     },
++    "node_modules/@types/superagent": {
++      "version": "8.1.10",
++      "resolved": "https://registry.npmjs.org/@types/superagent/-/superagent-8.1.10.tgz",
++      "integrity": "sha512-nbt4IWXABhW0jGmmpRzCFNlbmwCTzZ2gTUsNIr+X+ItdqPms+PAJZbWsNzpS2USqXjcoNLQcO6nXo60zcPQiIg==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/cookiejar": "^2.1.5",
++        "@types/methods": "^1.1.4",
++        "@types/node": "*",
++        "form-data": "^4.0.0"
++      }
++    },
++    "node_modules/@types/supertest": {
++      "version": "7.2.0",
++      "resolved": "https://registry.npmjs.org/@types/supertest/-/supertest-7.2.0.tgz",
++      "integrity": "sha512-uh2Lv57xvggst6lCqNdFAmDSvoMG7M/HDtX4iUCquxQ5EGPtaPM5PL5Hmi7LCvOG8db7YaCPNJEeoI8s/WzIQw==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@types/methods": "^1.1.4",
++        "@types/superagent": "^8.1.0"
++      }
++    },
+     "node_modules/@types/trusted-types": {
+       "version": "2.0.7",
+       "resolved": "https://registry.npmjs.org/@types/trusted-types/-/trusted-types-2.0.7.tgz",
+       "integrity": "sha512-ScaPdn1dQczgbl0QFTeTOmVHFULt394XJgOQNoyVhZ6r2vLnMLJfBPd53SB52T/3G36VI1/g2MZaX0cwDuXsfw==",
+       "license": "MIT",
+       "optional": true
+     },
+     "node_modules/@types/unist": {
+       "version": "3.0.3",
+       "resolved": "https://registry.npmjs.org/@types/unist/-/unist-3.0.3.tgz",
+@@ -7537,20 +8122,27 @@
+         "get-intrinsic": "^1.2.6",
+         "is-array-buffer": "^3.0.4"
+       },
+       "engines": {
+         "node": ">= 0.4"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/asap": {
++      "version": "2.0.6",
++      "resolved": "https://registry.npmjs.org/asap/-/asap-2.0.6.tgz",
++      "integrity": "sha512-BSHWgDSAiKs50o2Re8ppvp3seVHXSRM44cdSsT9FfNEUUZLOGWVCsiWaRPWM1Znn+mqZ1OfVZ3z3DWEzSp7hRA==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/asn1.js": {
+       "version": "5.4.1",
+       "resolved": "https://registry.npmjs.org/asn1.js/-/asn1.js-5.4.1.tgz",
+       "integrity": "sha512-+I//4cYPccV8LdmBLiX8CYvf9Sp3vQsrqu2QNXRcrbiWvcx/UdlFiqUJJzxRQxgsZmvhXhn4cSKeSmoFjVdupA==",
+       "license": "MIT",
+       "dependencies": {
+         "bn.js": "^4.0.0",
+         "inherits": "^2.0.1",
+         "minimalistic-assert": "^1.0.0",
+         "safer-buffer": "^2.1.0"
+@@ -7748,20 +8340,30 @@
+       "dependencies": {
+         "possible-typed-array-names": "^1.0.0"
+       },
+       "engines": {
+         "node": ">= 0.4"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
++    "node_modules/await-to-js": {
++      "version": "3.0.0",
++      "resolved": "https://registry.npmjs.org/await-to-js/-/await-to-js-3.0.0.tgz",
++      "integrity": "sha512-zJAaP9zxTcvTHRlejau3ZOY4V7SRpiByf3/dxx2uyKxxor19tpmpV2QRsTKikckwhaPmr2dVpxxMr7jOCYVp5g==",
++      "license": "MIT",
++      "optional": true,
++      "engines": {
++        "node": ">=6.0.0"
++      }
++    },
+     "node_modules/aws4": {
+       "version": "1.13.2",
+       "resolved": "https://registry.npmjs.org/aws4/-/aws4-1.13.2.tgz",
+       "integrity": "sha512-lHe62zvbTB5eEABUVi/AwVh0ZKY9rMMDhmm+eeyuuUQbQ3+J+fONVQOZyj+DdrvD4BY33uYniyRJ4UJIaSKAfw==",
+       "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/bail": {
+       "version": "2.0.2",
+       "resolved": "https://registry.npmjs.org/bail/-/bail-2.0.2.tgz",
+@@ -9094,20 +9696,30 @@
+     "node_modules/compare-version": {
+       "version": "0.1.2",
+       "resolved": "https://registry.npmjs.org/compare-version/-/compare-version-0.1.2.tgz",
+       "integrity": "sha512-pJDh5/4wrEnXX/VWRZvruAGHkzKdr46z11OlTPN+VrATlWWhSKewNCJ1futCO5C7eJB3nPMFZA1LeYtcFboZ2A==",
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">=0.10.0"
+       }
+     },
++    "node_modules/component-emitter": {
++      "version": "1.3.1",
++      "resolved": "https://registry.npmjs.org/component-emitter/-/component-emitter-1.3.1.tgz",
++      "integrity": "sha512-T0+barUSQRTUQASh8bx02dl+DhF54GtIDY13Y3m9oWTklKbb3Wv974meRpeZ3lp1JpLVECWWNHC4vaG2XHXouQ==",
++      "dev": true,
++      "license": "MIT",
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
+     "node_modules/concat-map": {
+       "version": "0.0.1",
+       "resolved": "https://registry.npmjs.org/concat-map/-/concat-map-0.0.1.tgz",
+       "integrity": "sha512-/Srv4dswyQNBfohGpz9o6Yb3Gz3SrUDqBH5rTuhGR7ahtlbYKnVxw2bCFMRljaA7EXHaXZ8wsHdodFvbkhKmqg==",
+       "devOptional": true,
+       "license": "MIT"
+     },
+     "node_modules/concat-stream": {
+       "version": "2.0.0",
+       "resolved": "https://registry.npmjs.org/concat-stream/-/concat-stream-2.0.0.tgz",
+@@ -9342,20 +9954,27 @@
+       "engines": {
+         "node": ">= 0.6"
+       }
+     },
+     "node_modules/cookie-signature": {
+       "version": "1.0.6",
+       "resolved": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.0.6.tgz",
+       "integrity": "sha512-QADzlaHc8icV8I7vbaJXJwod9HWYp8uCqf1xa4OfNu1T7JVxQIrUgOWtHdNDtPiywmFbiS12VjotIXLrKM3orQ==",
+       "license": "MIT"
+     },
++    "node_modules/cookiejar": {
++      "version": "2.1.4",
++      "resolved": "https://registry.npmjs.org/cookiejar/-/cookiejar-2.1.4.tgz",
++      "integrity": "sha512-LDx6oHrK+PhzLKJU9j5S7/Y3jM/mUHvD/DeI1WQmJn652iPC5Y4TBzC9l+5OMOXlyTTA+SmVUPm0HQUwpD5Jqw==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/core-util-is": {
+       "version": "1.0.3",
+       "resolved": "https://registry.npmjs.org/core-util-is/-/core-util-is-1.0.3.tgz",
+       "integrity": "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ==",
+       "license": "MIT"
+     },
+     "node_modules/cors": {
+       "version": "2.8.5",
+       "resolved": "https://registry.npmjs.org/cors/-/cors-2.8.5.tgz",
+       "integrity": "sha512-KIHbLJqu73RGr/hnbrO9uBeixNGuvSQjul/jdFvS/KFSIH1hWVd1ng7zOHx+YrEfInLG7q4n6GHQ9cDtxv/P6g==",
+@@ -9834,20 +10453,31 @@
+       "integrity": "sha512-RWmIqhcFf1lRYBvNmr7qTNuyCt/7/ns2jbpp1+PalgE/rDQcBT0fioSMUpJ93irlUhC5hrg4cYqe6U+0ImW0rA==",
+       "license": "MIT",
+       "dependencies": {
+         "dequal": "^2.0.0"
+       },
+       "funding": {
+         "type": "github",
+         "url": "https://github.com/sponsors/wooorm"
+       }
+     },
++    "node_modules/dezalgo": {
++      "version": "1.0.4",
++      "resolved": "https://registry.npmjs.org/dezalgo/-/dezalgo-1.0.4.tgz",
++      "integrity": "sha512-rXSP0bf+5n0Qonsb+SVVfNfIsimO4HEtmnIpPHY8Q1UCzKlQrDMfdobr8nJOOsRgWCyMRqeSBQzmWUMq7zvVig==",
++      "dev": true,
++      "license": "ISC",
++      "dependencies": {
++        "asap": "^2.0.0",
++        "wrappy": "1"
++      }
++    },
+     "node_modules/didyoumean": {
+       "version": "1.2.2",
+       "resolved": "https://registry.npmjs.org/didyoumean/-/didyoumean-1.2.2.tgz",
+       "integrity": "sha512-gxtyfqMg7GKyhQmb056K7M3xszy/myH8w+B4RT+QXBQsvAOdc3XymqDDPHx1BgPgsdAA5SIifona89YtRATDzw==",
+       "license": "Apache-2.0"
+     },
+     "node_modules/dir-compare": {
+       "version": "4.2.0",
+       "resolved": "https://registry.npmjs.org/dir-compare/-/dir-compare-4.2.0.tgz",
+       "integrity": "sha512-2xMCmOoMrdQIPHdsTawECdNPwlVFB9zGcz3kuhmBO6U3oU+UQjsue0i8ayLKpgBcm+hcXPMVSGUN9d+pvJ6+VQ==",
+@@ -11597,20 +12227,27 @@
+       "dev": true,
+       "license": "MIT"
+     },
+     "node_modules/fast-levenshtein": {
+       "version": "2.0.6",
+       "resolved": "https://registry.npmjs.org/fast-levenshtein/-/fast-levenshtein-2.0.6.tgz",
+       "integrity": "sha512-DCXu6Ifhqcks7TZKY3Hxp3y6qphY5SJZmrWMDrKcERSOXWQdMhU9Ig/PYrzyw/ul9jOIyh0N4M0tbC5hodg8dw==",
+       "dev": true,
+       "license": "MIT"
+     },
++    "node_modules/fast-safe-stringify": {
++      "version": "2.1.1",
++      "resolved": "https://registry.npmjs.org/fast-safe-stringify/-/fast-safe-stringify-2.1.1.tgz",
++      "integrity": "sha512-W+KJc2dmILlPplD/H4K9l9LcAHAfPtP6BY84uVLXQ6Evcz9Lcg33Y2z1IVblT6xdY54PXYVHEv+0Wpq8Io6zkA==",
++      "dev": true,
++      "license": "MIT"
++    },
+     "node_modules/fast-sha256": {
+       "version": "1.3.0",
+       "resolved": "https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz",
+       "integrity": "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==",
+       "license": "Unlicense"
+     },
+     "node_modules/fast-uri": {
+       "version": "3.1.0",
+       "resolved": "https://registry.npmjs.org/fast-uri/-/fast-uri-3.1.0.tgz",
+       "integrity": "sha512-iPeeDKJSWf4IEOasVVrknXpaBV0IApz/gp7S2bb7Z4Lljbl2MGJRqInZiUrQwV16cpzw/D3S5j5Julj/gT52AA==",
+@@ -11916,20 +12553,38 @@
+       }
+     },
+     "node_modules/format": {
+       "version": "0.2.2",
+       "resolved": "https://registry.npmjs.org/format/-/format-0.2.2.tgz",
+       "integrity": "sha512-wzsgA6WOq+09wrU1tsJ09udeR/YZRaeArL9e1wPbFg3GG2yDnC2ldKpxs4xunpFF9DgqCqOIra3bc1HWrJ37Ww==",
+       "engines": {
+         "node": ">=0.4.x"
+       }
+     },
++    "node_modules/formidable": {
++      "version": "3.5.4",
++      "resolved": "https://registry.npmjs.org/formidable/-/formidable-3.5.4.tgz",
++      "integrity": "sha512-YikH+7CUTOtP44ZTnUhR7Ic2UASBPOqmaRkRKxRbywPTe5VxF7RRCck4af9wutiZ/QKM5nME9Bie2fFaPz5Gug==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "@paralleldrive/cuid2": "^2.2.2",
++        "dezalgo": "^1.0.4",
++        "once": "^1.4.0"
++      },
++      "engines": {
++        "node": ">=14.0.0"
++      },
++      "funding": {
++        "url": "https://ko-fi.com/tunnckoCore/commissions"
++      }
++    },
+     "node_modules/forwarded": {
+       "version": "0.2.0",
+       "resolved": "https://registry.npmjs.org/forwarded/-/forwarded-0.2.0.tgz",
+       "integrity": "sha512-buRG0fpBtRHSTCOASe6hD258tEubFoRLb4ZNA6NxMVHNw2gOcwHo9wyablzMzOA5z9xA9L1KNjk/Nt6MT9aYow==",
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.6"
+       }
+     },
+     "node_modules/fraction.js": {
+@@ -19906,46 +20561,46 @@
+       "dev": true,
+       "license": "MIT",
+       "engines": {
+         "node": ">= 0.4"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+     "node_modules/side-channel": {
+-      "version": "1.1.0",
+-      "resolved": "https://registry.npmjs.org/side-channel/-/side-channel-1.1.0.tgz",
+-      "integrity": "sha512-ZX99e6tRweoUXqR+VBrslhda51Nh5MTQwou5tnUDgbtyM0dBgmhEDtWGP/xbKn6hqfPRHujUNwz5fy/wbbhnpw==",
++      "version": "1.1.1",
++      "resolved": "https://registry.npmjs.org/side-channel/-/side-channel-1.1.1.tgz",
++      "integrity": "sha512-6x6dK6zJdpTzF4sQeNYxwtvBzf6Eg4GtlesS94HOvTudUeyK2WXAaIfmDgsyslYrRBeFIlsi54AYsFGUuhmvrQ==",
+       "license": "MIT",
+       "dependencies": {
+         "es-errors": "^1.3.0",
+-        "object-inspect": "^1.13.3",
+-        "side-channel-list": "^1.0.0",
++        "object-inspect": "^1.13.4",
++        "side-channel-list": "^1.0.1",
+         "side-channel-map": "^1.0.1",
+         "side-channel-weakmap": "^1.0.2"
+       },
+       "engines": {
+         "node": ">= 0.4"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+     "node_modules/side-channel-list": {
+-      "version": "1.0.0",
+-      "resolved": "https://registry.npmjs.org/side-channel-list/-/side-channel-list-1.0.0.tgz",
+-      "integrity": "sha512-FCLHtRD/gnpCiCHEiJLOwdmFP+wzCmDEkc9y7NsYxeF4u7Btsn1ZuwgwJGxImImHicJArLP4R0yX4c2KCrMrTA==",
++      "version": "1.0.1",
++      "resolved": "https://registry.npmjs.org/side-channel-list/-/side-channel-list-1.0.1.tgz",
++      "integrity": "sha512-mjn/0bi/oUURjc5Xl7IaWi/OJJJumuoJFQJfDDyO46+hBWsfaVM65TBHq2eoZBhzl9EchxOijpkbRC8SVBQU0w==",
+       "license": "MIT",
+       "dependencies": {
+         "es-errors": "^1.3.0",
+-        "object-inspect": "^1.13.3"
++        "object-inspect": "^1.13.4"
+       },
+       "engines": {
+         "node": ">= 0.4"
+       },
+       "funding": {
+         "url": "https://github.com/sponsors/ljharb"
+       }
+     },
+     "node_modules/side-channel-map": {
+       "version": "1.0.1",
+@@ -20687,20 +21342,96 @@
+       "integrity": "sha512-MvjXzkz/BOfyVDkG0oFOtBxHX2u3gKbMHIF/dXblZsgD3BWOFLmHovIpZY7BykJdAjcqRCBi1WYBNdEC9yI7vg==",
+       "dev": true,
+       "license": "Apache-2.0",
+       "dependencies": {
+         "debug": "^4.1.0"
+       },
+       "engines": {
+         "node": ">= 8.0"
+       }
+     },
++    "node_modules/superagent": {
++      "version": "10.3.0",
++      "resolved": "https://registry.npmjs.org/superagent/-/superagent-10.3.0.tgz",
++      "integrity": "sha512-B+4Ik7ROgVKrQsXTV0Jwp2u+PXYLSlqtDAhYnkkD+zn3yg8s/zjA2MeGayPoY/KICrbitwneDHrjSotxKL+0XQ==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "component-emitter": "^1.3.1",
++        "cookiejar": "^2.1.4",
++        "debug": "^4.3.7",
++        "fast-safe-stringify": "^2.1.1",
++        "form-data": "^4.0.5",
++        "formidable": "^3.5.4",
++        "methods": "^1.1.2",
++        "mime": "2.6.0",
++        "qs": "^6.14.1"
++      },
++      "engines": {
++        "node": ">=14.18.0"
++      }
++    },
++    "node_modules/superagent/node_modules/mime": {
++      "version": "2.6.0",
++      "resolved": "https://registry.npmjs.org/mime/-/mime-2.6.0.tgz",
++      "integrity": "sha512-USPkMeET31rOMiarsBNIHZKLGgvKc/LrjofAnBlOttf5ajRvqiRA8QsenbcooctK6d6Ts6aqZXBA+XbkKthiQg==",
++      "dev": true,
++      "license": "MIT",
++      "bin": {
++        "mime": "cli.js"
++      },
++      "engines": {
++        "node": ">=4.0.0"
++      }
++    },
++    "node_modules/superagent/node_modules/qs": {
++      "version": "6.15.3",
++      "resolved": "https://registry.npmjs.org/qs/-/qs-6.15.3.tgz",
++      "integrity": "sha512-O9gl3zCl5h5blw1KGUzQKhA5oUXSl8rwUIM5o0S3nCXMliSvy5Dzx7/DJcI+SwgICv+IneSZwhBh1oSyEHA71A==",
++      "dev": true,
++      "license": "BSD-3-Clause",
++      "dependencies": {
++        "es-define-property": "^1.0.1",
++        "side-channel": "^1.1.1"
++      },
++      "engines": {
++        "node": ">=0.6"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/ljharb"
++      }
++    },
++    "node_modules/supertest": {
++      "version": "7.2.2",
++      "resolved": "https://registry.npmjs.org/supertest/-/supertest-7.2.2.tgz",
++      "integrity": "sha512-oK8WG9diS3DlhdUkcFn4tkNIiIbBx9lI2ClF8K+b2/m8Eyv47LSawxUzZQSNKUrVb2KsqeTDCcjAAVPYaSLVTA==",
++      "dev": true,
++      "license": "MIT",
++      "dependencies": {
++        "cookie-signature": "^1.2.2",
++        "methods": "^1.1.2",
++        "superagent": "^10.3.0"
++      },
++      "engines": {
++        "node": ">=14.18.0"
++      }
++    },
++    "node_modules/supertest/node_modules/cookie-signature": {
++      "version": "1.2.2",
++      "resolved": "https://registry.npmjs.org/cookie-signature/-/cookie-signature-1.2.2.tgz",
++      "integrity": "sha512-D76uU73ulSXrD1UXF4KE2TMxVVwhsnCgfAyTg9k8P6KGZjlXKrOLe4dJQKI3Bxi5wjesZoFXJWElNWBjPZMbhg==",
++      "dev": true,
++      "license": "MIT",
++      "engines": {
++        "node": ">=6.6.0"
++      }
++    },
+     "node_modules/supports-color": {
+       "version": "8.1.1",
+       "resolved": "https://registry.npmjs.org/supports-color/-/supports-color-8.1.1.tgz",
+       "integrity": "sha512-MpUEN2OodtUzxvKQl72cUF7RQ5EiHsGvSsVG0ia9c5RbWGL2CI4C7EpPS8UTBIplnlzZiNuV56w+FuNxy3ty2Q==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "has-flag": "^4.0.0"
+       },
+       "engines": {
+@@ -22019,20 +22750,33 @@
+       "dev": true,
+       "license": "BSD-2-Clause",
+       "optional": true,
+       "bin": {
+         "uglifyjs": "bin/uglifyjs"
+       },
+       "engines": {
+         "node": ">=0.8.0"
+       }
+     },
++    "node_modules/uint8array-extras": {
++      "version": "1.5.0",
++      "resolved": "https://registry.npmjs.org/uint8array-extras/-/uint8array-extras-1.5.0.tgz",
++      "integrity": "sha512-rvKSBiC5zqCCiDZ9kAOszZcDvdAHwwIKJG33Ykj43OKcWsnmcBRL09YTU4nOeHZ8Y2a7l1MgTd08SBe9A8Qj6A==",
++      "license": "MIT",
++      "optional": true,
++      "engines": {
++        "node": ">=18"
++      },
++      "funding": {
++        "url": "https://github.com/sponsors/sindresorhus"
++      }
++    },
+     "node_modules/unbox-primitive": {
+       "version": "1.1.0",
+       "resolved": "https://registry.npmjs.org/unbox-primitive/-/unbox-primitive-1.1.0.tgz",
+       "integrity": "sha512-nWJ91DjeOkej/TA8pXQ3myruKpKEYgqvpw9lz4OPHj/NWFNluYrjbz9j01CJ8yKQd2g4jFoOkINCTW2I5LEEyw==",
+       "dev": true,
+       "license": "MIT",
+       "dependencies": {
+         "call-bound": "^1.0.3",
+         "has-bigints": "^1.0.2",
+         "has-symbols": "^1.1.0",
+diff --git a/package.json b/package.json
+index 88c4de9..04d9c03 100644
+--- a/package.json
++++ b/package.json
+@@ -199,20 +199,21 @@
+     "@commitlint/cli": "^20.5.0",
+     "@commitlint/config-conventional": "^20.5.0",
+     "@eslint/js": "^9.39.3",
+     "@release-it/conventional-changelog": "^10.0.5",
+     "@types/better-sqlite3": "^7.6.13",
+     "@types/cross-spawn": "^6.0.6",
+     "@types/express": "^5.0.6",
+     "@types/node": "^22.19.7",
+     "@types/react": "^18.2.43",
+     "@types/react-dom": "^18.2.17",
++    "@types/supertest": "^7.2.0",
+     "@types/ws": "^8.18.1",
+     "@vitejs/plugin-react": "^4.6.0",
+     "auto-changelog": "^2.5.0",
+     "autoprefixer": "^10.4.16",
+     "concurrently": "^8.2.2",
+     "cross-env": "^10.1.0",
+     "electron": "^38.0.0",
+     "electron-builder": "^26.15.3",
+     "eslint": "^9.39.3",
+     "eslint-import-resolver-typescript": "^4.4.4",
+@@ -223,20 +224,21 @@
+     "eslint-plugin-react-refresh": "^0.5.2",
+     "eslint-plugin-tailwindcss": "^3.18.2",
+     "eslint-plugin-unused-imports": "^4.4.1",
+     "globals": "^17.4.0",
+     "husky": "^9.1.7",
+     "lint-staged": "^16.3.2",
+     "node-gyp": "^10.0.0",
+     "postcss": "^8.4.32",
+     "release-it": "^19.0.5",
+     "sharp": "^0.34.2",
++    "supertest": "^7.2.2",
+     "tailwindcss": "^3.4.0",
+     "tsc-alias": "^1.8.16",
+     "tsx": "^4.21.0",
+     "typescript": "^5.9.3",
+     "typescript-eslint": "^8.56.1",
+     "vite": "^7.0.4"
+   },
+   "lint-staged": {
+     "src/**/*.{ts,tsx,js,jsx}": "eslint",
+     "server/**/*.{js,ts}": "eslint"
+diff --git a/server/index.js b/server/index.js
+index 679645a..6a48c25 100755
+--- a/server/index.js
++++ b/server/index.js
+@@ -57,24 +57,26 @@ import commandsRoutes from './routes/commands.js';
+ import settingsRoutes from './routes/settings.js';
+ import agentRoutes from './routes/agent.js';
+ import projectModuleRoutes from './modules/projects/projects.routes.js';
+ import notificationRoutes from './modules/notifications/notifications.routes.js';
+ import userRoutes from './routes/user.js';
+ import geminiRoutes from './routes/gemini.js';
+ import pluginsRoutes from './routes/plugins.js';
+ import providerRoutes from './modules/providers/provider.routes.js';
+ import voiceRoutes from './voice-proxy.js';
+ import browserUseRoutes from './modules/browser-use/browser-use.routes.js';
++import onsiteRoutes from './modules/onsite-analysis/onsite.routes.js';
+ import browserUseMcpRoutes from './modules/browser-use/browser-use-mcp.routes.js';
+ import { browserUseService } from './modules/browser-use/browser-use.service.js';
+ import { startEnabledPluginServers, stopAllPlugins, getPluginPort } from './utils/plugin-process-manager.js';
+ import { initializeDatabase, projectsDb, sessionsDb } from './modules/database/index.js';
++import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
+ import { configureWebPush } from './services/vapid-keys.js';
+ import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
+ import { IS_PLATFORM } from './constants/config.js';
+ import { c } from './utils/colors.js';
+ 
+ const __dirname = getModuleDir(import.meta.url);
+ // The server source runs from /server, while the compiled output runs from /dist-server/server.
+ // Resolving the app root once keeps every repo-level lookup below aligned across both layouts.
+ const APP_ROOT = findAppRoot(__dirname);
+ const installMode = fs.existsSync(path.join(APP_ROOT, '.git')) ? 'git' : 'npm';
+@@ -219,20 +221,23 @@ app.use('/api/browser-use-mcp', browserUseMcpRoutes);
+ 
+ // Browser API Routes (protected)
+ app.use('/api/browser-use', authenticateToken, browserUseRoutes);
+ 
+ // Unified provider MCP routes (protected)
+ app.use('/api/providers', authenticateToken, providerRoutes);
+ 
+ // Agent API Routes (uses API key authentication)
+ app.use('/api/agent', agentRoutes);
+ 
++// Onsite analysis routes (customer onsite issue wizard + config)
++app.use('/api/onsite', authenticateToken, onsiteRoutes);
++
+ app.use('/api/voice', authenticateToken, voiceRoutes);
+ 
+ // Serve public files (like api-docs.html)
+ app.use(express.static(path.join(APP_ROOT, 'public')));
+ 
+ // Static files served after API routes
+ // Add cache control: HTML files should not be cached, but assets can be cached
+ app.use(express.static(path.join(APP_ROOT, 'dist'), {
+     setHeaders: (res, filePath) => {
+         if (filePath.endsWith('.html')) {
+@@ -1755,20 +1760,27 @@ async function startServer() {
+             console.log(c.dim('═'.repeat(63)));
+             console.log('');
+             console.log(`${c.info('[INFO]')} Server URL:  ${c.bright('http://' + DISPLAY_HOST + ':' + SERVER_PORT)}`);
+             console.log(`${c.info('[INFO]')} Installed at: ${c.dim(appInstallPath)}`);
+             console.log(`${c.tip('[TIP]')}  Run "cloudcli status" for full configuration details`);
+             console.log('');
+ 
+             // Start watching the projects folder for changes
+             await initializeSessionsWatcher();
+ 
++            // Bootstrap onsite analysis config + start mtime hot-reload watcher
++            try {
++                await bootstrapConfig(path.join(APP_ROOT, 'config/customer-analysis.json'));
++            } catch (error) {
++                console.warn(`${c.warn('[WARN]')} Failed to bootstrap onsite config:`, error?.message || error);
++            }
++
+             // Start server-side plugin processes for enabled plugins
+             startEnabledPluginServers().catch(err => {
+                 console.error('[Plugins] Error during startup:', err.message);
+             });
+         });
+ 
+         await closeSessionsWatcher();
+         // Clean up plugin processes on shutdown
+         const shutdownRuntimeServices = async () => {
+             try {
+diff --git a/server/modules/onsite-analysis/config.service.ts b/server/modules/onsite-analysis/config.service.ts
+new file mode 100644
+index 0000000..dfb1007
+--- /dev/null
++++ b/server/modules/onsite-analysis/config.service.ts
+@@ -0,0 +1,309 @@
++/**
++ * ConfigService — loads and validates `config/customer-analysis.json` against
++ * the JSON Schema in `config/json-schemas/customer-analysis.schema.json`.
++ *
++ * - Single in-memory payload (singleton)
++ * - Uses ajv to validate
++ * - Throws explicit errors (InvalidConfigError / ConfigFileNotFoundError)
++ * - Hot reload lives in `watchConfig()` (see Task 1.3)
++ */
++
++import { createRequire } from 'node:module';
++import { readFile } from 'node:fs/promises';
++import path from 'node:path';
++
++import type Ajv from 'ajv';
++import type { ErrorObject, ValidateFunction } from 'ajv';
++import chokidar, { type FSWatcher } from 'chokidar';
++
++import { findAppRoot, getModuleDir } from '@/utils/runtime-paths.js';
++
++// ajv@6 supports draft-07 natively (newer ajv@8 needs explicit meta-schema).
++// We use the project-level ajv peer (already installed as a transitive of
++// @commitlint/config-validator) instead of pulling a new dep.
++const require = createRequire(import.meta.url);
++const AjvModule = require('ajv') as { default?: typeof Ajv } & typeof Ajv;
++const AjvCtor: typeof Ajv = (AjvModule.default ?? AjvModule) as unknown as typeof Ajv;
++const APP_ROOT = findAppRoot(getModuleDir(import.meta.url));
++const SCHEMA_ABS_PATH = path.join(APP_ROOT, 'config/json-schemas/customer-analysis.schema.json');
++
++export type ConfigCustomer = {
++  label: string;
++  branch: string | null;
++};
++
++export type ConfigPayload = {
++  status: 'OK' | 'INVALID';
++  mtime: string;
++  data: {
++    customers: ConfigCustomer[];
++    iterations: string[];
++  };
++  error?: string;
++};
++
++export class InvalidConfigError extends Error {
++  readonly code = 'INVALID_CONFIG';
++  readonly ajvErrors: ErrorObject[];
++
++  constructor(message: string, ajvErrors: ErrorObject[] = []) {
++    super(message);
++    this.name = 'InvalidConfigError';
++    this.ajvErrors = ajvErrors;
++  }
++}
++
++export class ConfigFileNotFoundError extends Error {
++  readonly code = 'CONFIG_FILE_NOT_FOUND';
++  readonly path: string;
++
++  constructor(filePath: string) {
++    super(`Config file not found: ${filePath}`);
++    this.name = 'ConfigFileNotFoundError';
++    this.path = filePath;
++  }
++}
++
++const SCHEMA_RELATIVE_PATH = 'config/json-schemas/customer-analysis.schema.json';
++
++let cachedPayload: ConfigPayload | null = null;
++let cachedValidator: ValidateFunction | null = null;
++
++function resolveConfigPath(input: string): string {
++  return path.isAbsolute(input) ? input : path.resolve(process.cwd(), input);
++}
++
++function loadValidator(): ValidateFunction {
++  if (cachedValidator) {
++    return cachedValidator;
++  }
++  // Lazy sync read; schema file is small and rarely changes.
++  // eslint-disable-next-line @typescript-eslint/no-require-imports
++  const fs = require('node:fs') as typeof import('node:fs');
++  const raw = fs.readFileSync(SCHEMA_ABS_PATH, 'utf8');
++  const schema = JSON.parse(raw);
++  const ajv = new AjvCtor({ allErrors: true, schemaId: 'auto' });
++  cachedValidator = ajv.compile(schema);
++  return cachedValidator;
++}
++
++function formatAjvErrors(errors: ErrorObject[]): string {
++  if (!errors.length) {
++    return 'invalid config';
++  }
++  return errors
++    .map((err) => {
++      const dataPath = (err as ErrorObject & { dataPath?: string }).dataPath ?? '/';
++      const detail = err.params && Object.keys(err.params).length > 0
++        ? ` (${JSON.stringify(err.params)})`
++        : '';
++      return `${dataPath} ${err.message ?? ''}${detail}`.trim();
++    })
++    .join('; ');
++}
++
++export async function loadConfig(filePath: string): Promise<ConfigPayload> {
++  const resolved = resolveConfigPath(filePath);
++
++  let raw: string;
++  try {
++    raw = await readFile(resolved, 'utf8');
++  } catch (error: unknown) {
++    const err = error as NodeJS.ErrnoException;
++    if (err && (err.code === 'ENOENT' || err.code === 'ENOTDIR')) {
++      throw new ConfigFileNotFoundError(resolved);
++    }
++    throw error;
++  }
++
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(raw);
++  } catch (error: unknown) {
++    const message = error instanceof Error ? error.message : 'JSON parse failed';
++    throw new InvalidConfigError(`Failed to parse config JSON: ${message}`);
++  }
++
++  const validate = loadValidator();
++  const valid = validate(parsed);
++  if (!valid) {
++    const formatted = formatAjvErrors(validate.errors ?? []);
++    throw new InvalidConfigError(
++      `Config validation failed at ${resolved}: ${formatted}`,
++      validate.errors ?? [],
++    );
++  }
++
++  const data = parsed as { customers: ConfigCustomer[]; iterations: string[] };
++  const stat = await import('node:fs/promises').then(({ stat }) => stat(resolved));
++
++  const payload: ConfigPayload = {
++    status: 'OK',
++    mtime: stat.mtime.toISOString(),
++    data: {
++      customers: data.customers.map((c) => ({ label: c.label, branch: c.branch })),
++      iterations: [...data.iterations],
++    },
++  };
++
++  cachedPayload = payload;
++  return payload;
++}
++
++export function getConfig(): ConfigPayload {
++  if (!cachedPayload) {
++    throw new Error('Config not loaded yet. Call loadConfig() first.');
++  }
++  return cachedPayload;
++}
++
++export function resetConfig(): void {
++  cachedPayload = null;
++}
++
++/**
++ * Test-only helper. Allows tests / routes to seed a payload without going
++ * through the file system.
++ */
++export function _setConfigForTests(payload: ConfigPayload | null): void {
++  cachedPayload = payload;
++}
++
++// ---------------------------------------------------------------------------
++// Hot reload (Task 1.3)
++// ---------------------------------------------------------------------------
++
++type ConfigChangeListener = (cfg: ConfigPayload) => void;
++type ConfigInvalidListener = (error: InvalidConfigError, filePath: string) => void;
++
++const subscribers = new Set<{
++  onChange: ConfigChangeListener;
++  onInvalid?: ConfigInvalidListener;
++}>();
++
++let activeWatcher: FSWatcher | null = null;
++let watchedPath: string | null = null;
++
++function emitChange(payload: ConfigPayload): void {
++  for (const sub of subscribers) {
++    try {
++      sub.onChange(payload);
++    } catch (err) {
++      console.warn('[config.service] subscriber threw on change:', err);
++    }
++  }
++}
++
++function emitInvalid(error: InvalidConfigError, filePath: string): void {
++  for (const sub of subscribers) {
++    if (!sub.onInvalid) continue;
++    try {
++      sub.onInvalid(error, filePath);
++    } catch (err) {
++      console.warn('[config.service] subscriber threw on invalid:', err);
++    }
++  }
++}
++
++async function reloadFromDisk(filePath: string): Promise<void> {
++  try {
++    const next = await loadConfig(filePath);
++    emitChange(next);
++  } catch (error: unknown) {
++    if (error instanceof InvalidConfigError) {
++      console.warn(`[config.service] hot-reload rejected invalid config at ${filePath}:`, error.message);
++      emitInvalid(error, filePath);
++      return;
++    }
++    console.warn(`[config.service] hot-reload failed for ${filePath}:`, error);
++  }
++}
++
++/**
++ * Start watching `filePath` for changes. Re-reads + re-validates on each
++ * change. If the new file fails validation, the previous (last-known-good)
++ * singleton is preserved. Returns an unsubscribe function that stops the
++ * watcher.
++ *
++ * Calling watchConfig() twice replaces the previous watcher.
++ */
++export function watchConfig(filePath: string): () => void {
++  if (activeWatcher) {
++    void activeWatcher.close().catch(() => undefined);
++    activeWatcher = null;
++  }
++  const resolved = resolveConfigPath(filePath);
++  watchedPath = resolved;
++
++  const watcher = chokidar.watch(resolved, {
++    ignoreInitial: true,
++    awaitWriteFinish: {
++      stabilityThreshold: 80,
++      pollInterval: 25,
++    },
++    persistent: true,
++    usePolling: false,
++  });
++  activeWatcher = watcher;
++
++  const onChange = () => {
++    void reloadFromDisk(resolved);
++  };
++  watcher.on('change', onChange);
++  watcher.on('add', onChange);
++  watcher.on('error', (err) => {
++    console.warn(`[config.service] watcher error on ${resolved}:`, err);
++  });
++
++  return () => {
++    void watcher.close().catch(() => undefined);
++    if (activeWatcher === watcher) {
++      activeWatcher = null;
++      watchedPath = null;
++    }
++  };
++}
++
++/**
++ * Subscribe to config changes. Returns an unsubscribe function.
++ *
++ * - `onChange(payload)` fires whenever a new valid config is loaded.
++ * - `onInvalid(error, filePath)` (optional) fires when the file was rewritten
++ *   but failed validation. The singleton stays at the previous good value.
++ */
++export function onConfigChange(
++  onChange: ConfigChangeListener,
++  onInvalid?: ConfigInvalidListener,
++): () => void {
++  const entry = { onChange, onInvalid };
++  subscribers.add(entry);
++  return () => {
++    subscribers.delete(entry);
++  };
++}
++
++/**
++ * Bootstrap helper — load the config once and start watching. Safe to call
++ * multiple times; subsequent calls are no-ops if the same path is already
++ * being watched.
++ */
++export async function bootstrapConfig(filePath: string): Promise<ConfigPayload> {
++  const resolved = resolveConfigPath(filePath);
++  const payload = await loadConfig(resolved);
++  if (watchedPath !== resolved) {
++    watchConfig(resolved);
++  }
++  return payload;
++}
++
++/**
++ * Test-only helper. Stops any active watcher and clears subscribers.
++ */
++export function _stopWatchingForTests(): void {
++  if (activeWatcher) {
++    void activeWatcher.close().catch(() => undefined);
++    activeWatcher = null;
++    watchedPath = null;
++  }
++  subscribers.clear();
++}
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/onsite.routes.ts b/server/modules/onsite-analysis/onsite.routes.ts
+new file mode 100644
+index 0000000..6b21bac
+--- /dev/null
++++ b/server/modules/onsite-analysis/onsite.routes.ts
+@@ -0,0 +1,32 @@
++/**
++ * Onsite analysis routes — `GET /api/onsite/config` (and more to come in
++ * later batches). Wraps the ConfigService for the front-end wizard.
++ *
++ * Authentication is applied at the server mount point
++ * (`app.use('/api/onsite', authenticateToken, onsiteRoutes)` in `server/index.js`),
++ * not per-handler, so every route under this prefix is protected.
++ */
++
++import express from 'express';
++
++import { getConfig } from './config.service.js';
++
++const router = express.Router();
++
++router.get('/config', (_req, res) => {
++  try {
++    const cfg = getConfig();
++    res.set('Cache-Control', 'no-store');
++    res.json({
++      status: cfg.status,
++      mtime: cfg.mtime,
++      data: cfg.data,
++      error: cfg.error,
++    });
++  } catch (error: unknown) {
++    const message = error instanceof Error ? error.message : 'Config not available';
++    res.status(503).json({ error: 'CONFIG_NOT_LOADED', message });
++  }
++});
++
++export default router;
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/tests/config.route.test.ts b/server/modules/onsite-analysis/tests/config.route.test.ts
+new file mode 100644
+index 0000000..4a97a64
+--- /dev/null
++++ b/server/modules/onsite-analysis/tests/config.route.test.ts
+@@ -0,0 +1,102 @@
++/**
++ * GET /api/onsite/config route tests.
++ *
++ * Run:
++ *   node_modules/.bin/tsx --test --tsconfig server/tsconfig.json server/modules/onsite-analysis/tests/config.route.test.ts
++ */
++
++import assert from 'node:assert/strict';
++import express from 'express';
++import request from 'supertest';
++import test from 'node:test';
++
++// Import the router under test.
++import onsiteRoutes from '../onsite.routes.js';
++import {
++  getConfig,
++  loadConfig,
++  resetConfig,
++  _setConfigForTests,
++  type ConfigPayload,
++} from '../config.service.js';
++
++const REPO_ROOT = process.cwd();
++const GOOD_CONFIG = `${REPO_ROOT}/config/customer-analysis.json`;
++
++function buildApp(): express.Express {
++  const app = express();
++  // Auth shim that injects a fake user so we don't need real JWT in tests.
++  app.use((req, _res, next) => {
++    (req as express.Request & { user?: { id: number; username: string } }).user = {
++      id: 1,
++      username: 'tester',
++    };
++    next();
++  });
++  app.use('/api/onsite', onsiteRoutes);
++  return app;
++}
++
++const samplePayload: ConfigPayload = {
++  status: 'OK',
++  mtime: new Date().toISOString(),
++  data: {
++    customers: [
++      { label: '不涉及三方对接', branch: null },
++      { label: '山西公安', branch: 'master_5.2_3.2' },
++    ],
++    iterations: ['release_5.2_3.2_20260327', 'master_5.2_3.2'],
++  },
++};
++
++test.beforeEach(() => {
++  resetConfig();
++});
++
++test('GET /api/onsite/config returns 200 + payload when loaded', async () => {
++  await loadConfig(GOOD_CONFIG);
++  const app = buildApp();
++
++  const response = await request(app).get('/api/onsite/config');
++
++  assert.equal(response.status, 200);
++  assert.equal(response.body.status, 'OK');
++  assert.ok(Array.isArray(response.body.data.customers));
++  assert.ok(response.body.data.customers.length >= 13);
++  assert.equal(response.body.data.customers[0].label, '不涉及三方对接');
++  assert.equal(response.body.data.customers[0].branch, null);
++  assert.equal(response.body.data.iterations.length, 2);
++});
++
++test('GET /api/onsite/config sets Cache-Control: no-store header', async () => {
++  _setConfigForTests(samplePayload);
++  const app = buildApp();
++
++  const response = await request(app).get('/api/onsite/config');
++
++  assert.equal(response.status, 200);
++  assert.match(response.headers['cache-control'] || '', /no-store/);
++});
++
++test('GET /api/onsite/config returns 503/500 when config not loaded', async () => {
++  resetConfig();
++  const app = buildApp();
++
++  const response = await request(app).get('/api/onsite/config');
++
++  // Accept either 500 or a custom 503 — implementation choice. Must NOT be 200.
++  assert.ok(response.status >= 500 && response.status < 600, `expected 5xx, got ${response.status}`);
++  assert.ok(response.body.error || response.body.message);
++});
++
++test('GET /api/onsite/config requires authentication (401 without token)', async () => {
++  // Build a separate app WITHOUT the auth shim and WITH the real auth middleware.
++  const { authenticateToken } = await import('../../../middleware/auth.js');
++  const app = express();
++  app.use('/api/onsite', authenticateToken, onsiteRoutes);
++
++  const response = await request(app).get('/api/onsite/config');
++
++  assert.equal(response.status, 401);
++  assert.match(response.body.error || '', /token|No token/i);
++});
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/tests/config.service.test.ts b/server/modules/onsite-analysis/tests/config.service.test.ts
+new file mode 100644
+index 0000000..873058e
+--- /dev/null
++++ b/server/modules/onsite-analysis/tests/config.service.test.ts
+@@ -0,0 +1,113 @@
++/**
++ * ConfigService tests — TDD discipline: write failing tests first.
++ *
++ * Run:
++ *   node_modules/.bin/tsx --test --tsconfig server/tsconfig.json server/modules/onsite-analysis/tests/config.service.test.ts
++ */
++
++import assert from 'node:assert/strict';
++import { mkdtemp, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import path from 'node:path';
++import test from 'node:test';
++
++import {
++  ConfigFileNotFoundError,
++  InvalidConfigError,
++  getConfig,
++  loadConfig,
++  resetConfig,
++} from '../config.service.js';
++
++const FIXTURES_DIR = path.resolve(
++  process.cwd(),
++  'server/modules/onsite-analysis/tests/fixtures',
++);
++const REPO_ROOT = path.resolve(process.cwd());
++const GOOD_CONFIG = path.join(REPO_ROOT, 'config/customer-analysis.json');
++const BAD_FIRST = path.join(FIXTURES_DIR, 'bad-first-not-null.json');
++const GOOD_MIN = path.join(FIXTURES_DIR, 'good-minimal.json');
++
++test.beforeEach(() => {
++  resetConfig();
++});
++
++test('loadConfig parses 13 customers + 2 iterations from real config', async () => {
++  const cfg = await loadConfig(GOOD_CONFIG);
++
++  assert.equal(cfg.status, 'OK');
++  assert.equal(cfg.data.customers.length, 13);
++  assert.equal(cfg.data.iterations.length, 2);
++  assert.equal(cfg.data.customers[0].label, '不涉及三方对接');
++  assert.equal(cfg.data.customers[0].branch, null);
++  assert.equal(typeof cfg.mtime, 'string');
++  assert.ok(cfg.mtime.length > 0);
++});
++
++test('loadConfig rejects bad-first-not-null fixture with InvalidConfigError', async () => {
++  await assert.rejects(
++    loadConfig(BAD_FIRST),
++    (error: unknown) => {
++      assert.ok(error instanceof InvalidConfigError, `expected InvalidConfigError, got ${error}`);
++      const message = (error as Error).message;
++      assert.match(message, /branch/);
++      return true;
++    },
++  );
++});
++
++test('loadConfig throws ConfigFileNotFoundError when file missing', async () => {
++  const missing = path.join(FIXTURES_DIR, 'does-not-exist.json');
++  await assert.rejects(
++    loadConfig(missing),
++    (error: unknown) => {
++      assert.ok(error instanceof ConfigFileNotFoundError);
++      return true;
++    },
++  );
++});
++
++test('getConfig throws before loadConfig', () => {
++  assert.throws(
++    () => getConfig(),
++    (error: unknown) => {
++      assert.match((error as Error).message, /not loaded/i);
++      return true;
++    },
++  );
++});
++
++test('getConfig returns singleton after loadConfig', async () => {
++  const a = await loadConfig(GOOD_CONFIG);
++  const b = getConfig();
++  assert.equal(b, a, 'getConfig must return the same instance that loadConfig returned');
++  assert.equal(b.status, 'OK');
++});
++
++test('getConfig still returns the singleton even after re-loading a different config', async () => {
++  const first = await loadConfig(GOOD_CONFIG);
++  const second = await loadConfig(GOOD_MIN);
++  const current = getConfig();
++  assert.equal(current, second, 'singleton is replaced by the latest loadConfig');
++  assert.notEqual(current, first);
++  assert.equal(current.data.customers.length, 1);
++});
++
++test('loadConfig with relative path resolves from process.cwd()', async () => {
++  // Use a temp dir with a fixture written by us
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-rel-'));
++  try {
++    const file = path.join(dir, 'cfg.json');
++    await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++    const previousCwd = process.cwd();
++    process.chdir(dir);
++    try {
++      const cfg = await loadConfig('cfg.json');
++      assert.equal(cfg.status, 'OK');
++    } finally {
++      process.chdir(previousCwd);
++    }
++  } finally {
++    await rm(dir, { recursive: true, force: true });
++  }
++});
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/tests/config.service.watch.test.ts b/server/modules/onsite-analysis/tests/config.service.watch.test.ts
+new file mode 100644
+index 0000000..18a3e0f
+--- /dev/null
++++ b/server/modules/onsite-analysis/tests/config.service.watch.test.ts
+@@ -0,0 +1,182 @@
++/**
++ * ConfigService hot-reload tests.
++ *
++ * Run:
++ *   node_modules/.bin/tsx --test --tsconfig server/tsconfig.json server/modules/onsite-analysis/tests/config.service.watch.test.ts
++ *
++ * Uses real chokidar (already installed) against a temp file. Each test gets
++ * its own temp file + cleanup.
++ */
++
++import assert from 'node:assert/strict';
++import { mkdtemp, rm, writeFile } from 'node:fs/promises';
++import { tmpdir } from 'node:os';
++import path from 'node:path';
++import test from 'node:test';
++
++import {
++  _stopWatchingForTests,
++  getConfig,
++  loadConfig,
++  onConfigChange,
++  resetConfig,
++  watchConfig,
++} from '../config.service.js';
++
++const FIXTURES_DIR = path.resolve(
++  process.cwd(),
++  'server/modules/onsite-analysis/tests/fixtures',
++);
++const GOOD_MIN = path.join(FIXTURES_DIR, 'good-minimal.json');
++
++const WAIT_FOR_POLL_MS = 60;
++const MAX_POLL_ATTEMPTS = 200;
++
++async function waitFor(predicate: () => boolean, timeoutMs = 4000): Promise<void> {
++  const deadline = Date.now() + timeoutMs;
++  let attempt = 0;
++  while (Date.now() < deadline && attempt < MAX_POLL_ATTEMPTS) {
++    if (predicate()) {
++      return;
++    }
++    attempt += 1;
++    await new Promise((r) => setTimeout(r, WAIT_FOR_POLL_MS));
++  }
++  throw new Error(`waitFor timed out after ${timeoutMs}ms`);
++}
++
++test.beforeEach(() => {
++  _stopWatchingForTests();
++  resetConfig();
++});
++
++test('mtime change triggers callback and replaces singleton', async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-'));
++  const file = path.join(dir, 'cfg.json');
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++
++  await loadConfig(file);
++  const off = watchConfig(file);
++  t.after(() => {
++    off();
++  });
++
++  let calls = 0;
++  let lastLabel = '';
++  const unsub = onConfigChange((cfg) => {
++    calls += 1;
++    lastLabel = cfg.data.customers[0].label;
++  });
++  t.after(unsub);
++
++  // Mutate content — chokidar should pick this up via mtime
++  await writeFile(
++    file,
++    JSON.stringify({
++      customers: [
++        { label: '不涉及三方对接', branch: null },
++        { label: '山西公安', branch: 'master_5.2_3.2' },
++      ],
++      iterations: ['master_5.2_3.2'],
++    }),
++    'utf8',
++  );
++
++  await waitFor(() => calls >= 1);
++
++  assert.ok(calls >= 1, 'callback should fire');
++  const current = getConfig();
++  assert.equal(current.data.customers[1].label, '山西公安', 'singleton should reflect new content');
++  assert.equal(lastLabel, '不涉及三方对接');
++});
++
++test('unsubscribe stops further callbacks', async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-unsub-'));
++  const file = path.join(dir, 'cfg.json');
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await loadConfig(file);
++  const off = watchConfig(file);
++  t.after(off);
++
++  let calls = 0;
++  const unsub = onConfigChange(() => {
++    calls += 1;
++  });
++  await waitFor(() => calls >= 1, 4000).catch(() => {}); // warm up
++  const callsAfterWarmup = calls;
++  unsub();
++
++  // Mutate again; callback should NOT fire
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }, { label: 'X', branch: 'master_x' }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await new Promise((r) => setTimeout(r, 1000));
++
++  assert.equal(calls, callsAfterWarmup, 'callback should not fire after unsubscribe');
++});
++
++test('multiple subscribers all receive callbacks', async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-multi-'));
++  const file = path.join(dir, 'cfg.json');
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await loadConfig(file);
++  const off = watchConfig(file);
++  t.after(off);
++
++  let a = 0;
++  let b = 0;
++  let c = 0;
++  const unsubA = onConfigChange(() => { a += 1; });
++  const unsubB = onConfigChange(() => { b += 1; });
++  const unsubC = onConfigChange(() => { c += 1; });
++  t.after(() => { unsubA(); unsubB(); unsubC(); });
++
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2', 'release_5.2_3.2_20260327'] }), 'utf8');
++
++  await waitFor(() => a >= 1 && b >= 1 && c >= 1);
++
++  assert.ok(a >= 1 && b >= 1 && c >= 1, 'all subscribers should fire');
++});
++
++test('invalid config on re-read is rejected, singleton stays at last known good', async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-invalid-'));
++  const file = path.join(dir, 'cfg.json');
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await loadConfig(file);
++  const off = watchConfig(file);
++  t.after(off);
++
++  let invalidCalls = 0;
++  const unsub = onConfigChange(
++    () => {},
++    () => {
++      invalidCalls += 1;
++    },
++  );
++  t.after(unsub);
++
++  // Write a bad config (first item has branch set)
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: 'master_5.2_3.2' }], iterations: ['master_5.2_3.2'] }), 'utf8');
++
++  await waitFor(() => invalidCalls >= 1, 4000);
++
++  const current = getConfig();
++  assert.equal(current.data.customers.length, 1, 'should still hold previous good config');
++  assert.equal(current.data.customers[0].branch, null);
++});
++
++test('watchConfig returns an unsubscribe function that stops the watcher', async (t) => {
++  const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-off-'));
++  const file = path.join(dir, 'cfg.json');
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await loadConfig(file);
++
++  const off = watchConfig(file);
++  off(); // immediately stop watching
++
++  let calls = 0;
++  const unsub = onConfigChange(() => { calls += 1; });
++  t.after(unsub);
++
++  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }, { label: 'Y', branch: 'master_y' }], iterations: ['master_5.2_3.2'] }), 'utf8');
++  await new Promise((r) => setTimeout(r, 1000));
++  assert.equal(calls, 0, 'watcher should be stopped');
++});
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/tests/fixtures/bad-first-not-null.json b/server/modules/onsite-analysis/tests/fixtures/bad-first-not-null.json
+new file mode 100644
+index 0000000..2155bf1
+--- /dev/null
++++ b/server/modules/onsite-analysis/tests/fixtures/bad-first-not-null.json
+@@ -0,0 +1,10 @@
++{
++  "_comment": "Bad fixture: first customer has branch != null. Used by config.service.test.ts.",
++  "customers": [
++    { "label": "不涉及三方对接", "branch": "master_5.2_3.2" },
++    { "label": "山西公安", "branch": "master_5.2_3.2" }
++  ],
++  "iterations": [
++    "release_5.2_3.2_20260327"
++  ]
++}
+\ No newline at end of file
+diff --git a/server/modules/onsite-analysis/tests/fixtures/good-minimal.json b/server/modules/onsite-analysis/tests/fixtures/good-minimal.json
+new file mode 100644
+index 0000000..c943de0
+--- /dev/null
++++ b/server/modules/onsite-analysis/tests/fixtures/good-minimal.json
+@@ -0,0 +1,9 @@
++{
++  "_comment": "Good fixture for re-read tests (minimal valid).",
++  "customers": [
++    { "label": "不涉及三方对接", "branch": null }
++  ],
++  "iterations": [
++    "master_5.2_3.2"
++  ]
++}
+\ No newline at end of file

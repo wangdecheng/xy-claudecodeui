@@ -1,0 +1,26 @@
+{
+  "_comment": "客户现场问题分析系统 - 新建向导下拉选项配置。客户名/迭代名都由本配置驱动，UI 不允许手动输入。新增条目直接改本文件即可。",
+  "customers": [
+    { "label": "不涉及三方对接", "branch": null },
+    { "label": "山西公安", "branch": "master_5.2_3.2" },
+    { "label": "最高检", "branch": "zgj_565939" },
+    { "label": "中石化", "branch": "sinopec" },
+    { "label": "中广核", "branch": "zgh_4a" },
+    { "label": "山东通公有云", "branch": "sdt-public" },
+    { "label": "山东通私有云", "branch": "wechat-customApp-dm" },
+    { "label": "上交所", "branch": "sse" },
+    { "label": "邮储", "branch": "psbc_youchu" },
+    { "label": "光大集团", "branch": "gdjt" },
+    { "label": "上海大数据", "branch": "wechat-standard-new-v2" },
+    { "label": "上海大数据（旧版）", "branch": "wechat-sh-datacenter" },
+    { "label": "中车长客（zcck）", "branch": "zcck" }
+  ],
+  "iterations": [
+    "release_5.2_3.2_20260327",
+    "release_5.2_3.2_20260626",
+    "release_5.2_3.2_20251226",
+    "release_5.2_3.2_20250926",
+    "release_5.2_3.2_20250627",
+    "release_5.2_3.2_20250328"
+  ]
+}
