@@ -15,7 +15,9 @@
  *    `~/work/customer-onsite-analysis/`, which yields a path that IS
  *    under root (no `..` segment), so no throw. The directory name then
  *    becomes `YYYYMMDD-<label>`. Verified in Batch 8 I2 — not a bug.
- *  - LogUploader is optional and disabled until the problem exists.
+ *  - LogUploader is optional and only rendered after the problem is created
+ *    (hidden before that — was previously shown as a disabled drop-zone, but
+ *    that confused users into thinking the uploader was broken).
  *  - submit → POST /problems → on success reload list and close.
  */
 
@@ -243,11 +245,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           </div>
         )}
 
-        {createdId ? (
-          <LogUploader problemId={createdId} />
-        ) : (
-          <LogUploader problemId={null} />
-        )}
+        {createdId && <LogUploader problemId={createdId} />}
 
         <div className="flex justify-end gap-2">
           <button

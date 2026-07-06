@@ -23,7 +23,6 @@
     "dzNote": "每个压缩包将解压到独立子目录(pod-1/、pod-2/…),禁止覆盖——避免排查盲区",
     "upload": "上传日志/资料(可选)",
     "uploadHint": "支持 .zip / .tar.gz,单文件 ≤ 200MB,最多 20 个",
-    "uploadBeforeCreate": "请先创建问题再上传文件",
     "submit": "创建问题",
     "createSuccess": "问题创建成功",
     "createFailed": "创建失败,请稍后重试",
