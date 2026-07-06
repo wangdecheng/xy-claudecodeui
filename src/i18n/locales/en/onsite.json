@@ -4,6 +4,8 @@
   },
   "wizard": {
     "title": "New Customer Onsite Problem",
+    "subtitle": "Three required inputs identify the service branch and SQL dialect. Without them, analysis cannot start. The directory will be auto-created as YYYYMMDD-<customer>.",
+    "date": "Problem date",
     "customer": "Customer",
     "customerPlaceholder": "Select a customer",
     "thirdPartyHint": "Third-party branch (optional)",
@@ -12,11 +14,17 @@
     "iterationPlaceholder": "Select an iteration",
     "database": "Database",
     "databasePlaceholder": "Enter database name",
+    "otherHint": "Database type unspecified — please confirm on site later",
+    "dzNote": "Each archive extracts to its own subdirectory (pod-1/, pod-2/, …) — overwrites are blocked to avoid blind spots.",
     "upload": "Upload logs / artifacts (optional)",
     "uploadHint": ".zip / .tar.gz supported, ≤ 200MB per file, up to 20 files",
+    "uploadBeforeCreate": "Please create the problem before uploading files",
     "submit": "Create problem",
     "createSuccess": "Problem created",
-    "createFailed": "Failed to create, please retry"
+    "createFailed": "Failed to create, please retry",
+    "titleField": "Problem title (optional)",
+    "titlePlaceholder": "e.g. Third-party login failure",
+    "titleTooLong": "Title must be at most 80 characters"
   },
   "status": {
     "pending_info": "Awaiting info",

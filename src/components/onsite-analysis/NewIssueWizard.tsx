@@ -52,6 +52,11 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   const [customer, setCustomer] = useState('');
   const [iteration, setIteration] = useState('');
   const [database, setDatabase] = useState('');
+  const todayIso = (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
+  const [date, setDate] = useState(todayIso);
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -64,6 +69,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     setCustomer('');
     setIteration('');
     setDatabase('');
+    setDate(todayIso);
     setErrorMsg(null);
     setCreatedId(null);
   }, [open, loadConfig, loadProblems]);
@@ -76,7 +82,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   }, [customer, customers]);
 
   const canSubmit =
-    configOk && customer.length > 0 && iteration.length > 0 && database.length > 0 && !creating;
+    configOk && customer.length > 0 && iteration.length > 0 && database.length > 0 && date.length > 0 && !creating;
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -87,6 +93,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
       customer,
       iteration,
       database,
+      date,
       cwd: matched?.branch ?? customer, // fallback to customer label; server validates cwd
     };
     // CRITICAL: when the customer is "no third-party", omit branch entirely.
@@ -143,6 +150,20 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           </button>
         </header>
 
+        <div className="flex flex-col gap-1">
+          <label htmlFor="onsite-date-input" className="text-xs font-medium text-foreground">
+            {t('onsite:wizard.date', { defaultValue: '问题日期' })}
+          </label>
+          <input
+            id="onsite-date-input"
+            data-testid="onsite-date-input"
+            type="date"
+            value={date}
+            max={todayIso}
+            onChange={(e) => setDate(e.target.value)}
+            className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+          />
+        </div>
         <CustomerSelect config={config} value={customer} onChange={setCustomer} />
         <NoThirdPartyHint visible={isFirstCustomer} />
         <IterationSelect config={config} value={iteration} onChange={setIteration} />

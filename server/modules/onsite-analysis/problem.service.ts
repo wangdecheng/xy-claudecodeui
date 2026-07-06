@@ -34,12 +34,25 @@ export class CwdEscapeError extends Error {
   }
 }
 
+export class FutureDateError extends Error {
+  readonly code = 'FUTURE_DATE';
+  readonly date: string;
+
+  constructor(date: string) {
+    super(`问题日期不能晚于今天 (got ${date})`);
+    this.name = 'FutureDateError';
+    this.date = date;
+  }
+}
+
 export type CreateProblemInput = {
   customer: string;
   third_bridge_branch: string | null;
   iteration: string;
   database: string;
   cwd: string;
+  /** YYYY-MM-DD; if absent, defaults to today. Future dates are rejected. */
+  date?: string;
 };
 
 export type ProblemRecord = {
@@ -124,7 +137,19 @@ export const problemService = {
     assertCwdUnderRoot(input.cwd, root);
 
     const today = new Date();
-    const yyyymmdd = formatYyyymmdd(today);
+    let yyyymmdd = formatYyyymmdd(today);
+
+    if (input.date !== undefined) {
+      const isoDate = input.date;
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+        throw new FutureDateError(isoDate);
+      }
+      const todayIso = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+      if (isoDate > todayIso) {
+        throw new FutureDateError(isoDate);
+      }
+      yyyymmdd = isoDate.replace(/-/g, '');
+    }
 
     const sanitizedCustomer = sanitizeCustomerLabel(input.customer);
     const baseDirName = `${yyyymmdd}-${sanitizedCustomer}`;

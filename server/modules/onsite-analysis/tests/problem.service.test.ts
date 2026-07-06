@@ -230,3 +230,65 @@ test('getById 返回 record 或 null', async () => {
     assert.equal(missing, null);
   });
 });
+
+test('create 接 date 字段: 选了未来日期抛 400', async () => {
+  await withIsolatedEnv(async () => {
+    const future = new Date();
+    future.setDate(future.getDate() + 7);
+    const futureIso = future.toISOString().slice(0, 10);
+    const cwd = process.env.ONSITE_ROOT + '/20260101-X';
+    await assert.rejects(
+      () =>
+        problemService.create({
+          customer: 'X',
+          third_bridge_branch: null,
+          iteration: 'master_5.2_3.2',
+          database: 'db01',
+          cwd,
+          date: futureIso,
+        }),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /问题日期不能晚于今天/);
+        return true;
+      },
+    );
+  });
+});
+
+test('create 接 date 字段: 指定日期应作为 YYYYMMDD 目录前缀', async () => {
+  await withIsolatedEnv(async () => {
+    const cwd = process.env.ONSITE_ROOT + '/20260515-Y';
+    const record = await problemService.create({
+      customer: 'Y',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd,
+      date: '2026-05-15',
+    });
+    // 目录前缀应来自 date 字段,不是今天
+    assert.ok(
+      record.id.startsWith('20260515-'),
+      `expected record.id to start with 20260515-, got ${record.id}`,
+    );
+  });
+});
+
+test('create 不接 date 字段时,默认用今天(向后兼容)', async () => {
+  await withIsolatedEnv(async () => {
+    const cwd = process.env.ONSITE_ROOT + '/X';
+    const record = await problemService.create({
+      customer: 'Z',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd,
+    });
+    const today = todayYyyymmdd();
+    assert.ok(
+      record.id.startsWith(`${today}-`),
+      `expected record.id to start with ${today}-, got ${record.id}`,
+    );
+  });
+});
