@@ -23,12 +23,16 @@ import { useOnsiteStore } from '../../stores/onsiteStore';
 import IssueListItem from './IssueListItem';
 import NewIssueWizard from './NewIssueWizard';
 
-const VISIBLE_GROUPS: { status: ProblemStatus; key: string }[] = [
-  { status: 'blocked', key: 'blocked' },
-  { status: 'analyzing', key: 'analyzing' },
-  { status: 'pending_info', key: 'pending_info' },
-  { status: 'confirmed', key: 'confirmed' },
-  { status: 'abandoned', key: 'abandoned' },
+// 业务阶段二分(REQ-2.6):进行中 = 未解决态;已归档 = 已收尾态
+const BUSINESS_PHASES: { key: 'active' | 'archived'; statuses: ProblemStatus[] }[] = [
+  {
+    key: 'active',
+    statuses: ['blocked', 'analyzing', 'pending_info'],
+  },
+  {
+    key: 'archived',
+    statuses: ['confirmed', 'abandoned'],
+  },
 ];
 
 export interface IssueListSidebarProps {
@@ -76,7 +80,7 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
       data-testid="onsite-issue-sidebar"
       className="flex h-full w-[300px] flex-shrink-0 flex-col border-r border-border bg-card"
     >
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
+      <div className="flex flex-col gap-2 border-b border-border px-3 py-2">
         <h2 className="text-sm font-semibold text-foreground">
           🔍 {t('onsite:nav.onsite', { defaultValue: 'Onsite' })}
         </h2>
@@ -84,10 +88,10 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
           type="button"
           onClick={() => setWizardOpen(true)}
           data-testid="onsite-new-issue-button"
-          className="inline-flex items-center gap-1 rounded-md bg-primary px-2 py-1 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+          className="inline-flex w-full items-center justify-center gap-1 rounded-md bg-primary px-3 py-2 text-xs font-medium text-primary-foreground hover:bg-primary/90"
         >
           <Plus className="h-3.5 w-3.5" />
-          {t('onsite:wizard.title', { defaultValue: 'New' }).split(' ')[0] ?? '+'}
+          {t('onsite:nav.newIssue', { defaultValue: '新建现场问题' })}
         </button>
       </div>
 
@@ -114,13 +118,13 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
             {t('onsite:common.empty', { defaultValue: 'No data' })}
           </div>
         ) : (
-          VISIBLE_GROUPS.map(({ status, key }) => {
-            const items = grouped.get(status) ?? [];
+          BUSINESS_PHASES.map(({ key, statuses }) => {
+            const items = statuses.flatMap((s) => grouped.get(s) ?? []);
             if (items.length === 0) return null;
             return (
-              <section key={key} className="mb-3" data-testid={`onsite-group-${status}`}>
+              <section key={key} className="mb-3" data-testid={`onsite-group-${key}`}>
                 <h3 className="mb-1 px-1 text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                  {t(`onsite:status.${status}`)} ({items.length})
+                  {t(`onsite:nav.${key}`, { defaultValue: key === 'active' ? '进行中' : '已归档' })} · {items.length}
                 </h3>
                 <ul className="space-y-1">
                   {items.map((p) => (

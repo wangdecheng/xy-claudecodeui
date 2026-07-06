@@ -1,6 +1,9 @@
 {
   "nav": {
-    "onsite": "🔍 客户现场分析"
+    "onsite": "🔍 客户现场分析",
+    "newIssue": "新建现场问题",
+    "active": "进行中",
+    "archived": "已归档"
   },
   "wizard": {
     "title": "新建客户现场问题",

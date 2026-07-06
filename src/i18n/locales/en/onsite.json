@@ -1,6 +1,9 @@
 {
   "nav": {
-    "onsite": "🔍 Customer Onsite Analysis"
+    "onsite": "🔍 Customer Onsite Analysis",
+    "newIssue": "New onsite problem",
+    "active": "Active",
+    "archived": "Archived"
   },
   "wizard": {
     "title": "New Customer Onsite Problem",
