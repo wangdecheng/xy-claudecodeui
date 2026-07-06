@@ -564,12 +564,9 @@ router.get('/problems/:id/messages', async (req, res) => {
     let messages = messagesStore.getByProblemId(id);
     if (messages.length === 0) {
       // 内存为空 → 回退到磁盘 JSONL(用户在 Claude Code CLI 跑过的历史)
-      // 注:problem.service 的 ProblemRecord 暂未暴露 created_at 字段,
-      // 所以不传 createdAtMs → loadHistoryFromClaudeCode 内部用 0,
-      // 即不过滤时间,返回该 project 全部 session 的所有消息。
-      // 后续如需 per-problem 过滤,需要先在 ProblemRecord 上加 created_at。
+      const createdAtMs = problem.created_at ? Date.parse(problem.created_at) : 0;
       try {
-        const disk = await loadHistoryFromClaudeCode(id, problem.cwd, 0);
+        const disk = await loadHistoryFromClaudeCode(id, problem.cwd, createdAtMs);
         messages = disk;
       } catch {
         // 读盘失败不要 500 — 返回空数组,前端显示空

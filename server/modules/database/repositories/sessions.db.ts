@@ -346,6 +346,17 @@ export const sessionsDb = {
            updated_at = CURRENT_TIMESTAMP
          WHERE session_id = ?`
       ).run(providerSessionId, sessionId);
+
+      // onsite session:把 session_id 从 problem.id 也改成 UUID,
+      // 让后续 chat.send 和 CLI --resume 都指向同一 UUID session。
+      const row = db
+        .prepare('SELECT kind FROM sessions WHERE session_id = ?')
+        .get(sessionId) as { kind?: string } | undefined;
+      if (row?.kind === 'onsite' && sessionId !== providerSessionId) {
+        db.prepare(
+          'UPDATE sessions SET session_id = ?, updated_at = CURRENT_TIMESTAMP WHERE session_id = ?'
+        ).run(providerSessionId, sessionId);
+      }
     });
 
     merge();

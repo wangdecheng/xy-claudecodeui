@@ -110,13 +110,26 @@ async function handleChatSend(
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): Promise<void> {
-  const sessionId = readRequiredSessionId(data);
+  let sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.send requires a sessionId.');
     return;
   }
 
-  const session = sessionsDb.getSessionById(sessionId);
+  let session = sessionsDb.getSessionById(sessionId);
+  if (!session) {
+    // onsite 回退:首次 run 后 session_id 已从 problem.id 改为 UUID,
+    // 但客户端还没收到 session_created 前可能仍用 problem.id 发包,
+    // 或 WebSocket 重连后 hello 还没发,按 cwd 查找已有 session。
+    const onsiteCtx = (ws as WebSocket & { onsite?: { cwd?: string } }).onsite;
+    if (onsiteCtx?.cwd) {
+      const onsiteSession = sessionsDb.findOnsiteSessionByCwd(onsiteCtx.cwd);
+      if (onsiteSession) {
+        session = onsiteSession;
+        sessionId = onsiteSession.session_id;
+      }
+    }
+  }
   if (!session) {
     sendProtocolError(
       ws,

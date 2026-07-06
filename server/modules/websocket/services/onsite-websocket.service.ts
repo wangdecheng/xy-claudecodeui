@@ -123,7 +123,13 @@ type HelloContext = {
  */
 function ensureOnsiteSession(problemId: string, cwd: string): void {
   try {
-    if (sessionsDb.getSessionById(problemId)) return;
+    // session_id 可能在首次 run 后被 assignProviderSessionId 从
+    // problem.id 更新为 UUID。先按 problemId 查,查不到再按 cwd 查。
+    let existing = sessionsDb.getSessionById(problemId);
+    if (!existing) {
+      existing = sessionsDb.findOnsiteSessionByCwd(cwd);
+    }
+    if (existing) return;
     const rec = onsiteProblemsDb.findById(problemId);
     sessionsDb.createOnsiteSession(problemId, 'claude', cwd, {
       cwd,

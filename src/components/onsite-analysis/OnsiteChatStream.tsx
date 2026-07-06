@@ -95,6 +95,15 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // sessionIdRef:初始为 problem.id,收到 session_created 后更新为 UUID。
+  // sendDraft / abort 从这里读取,确保首次 run 后 chat.send 用 UUID 发包,
+  // 与 CLI --resume 指向同一 session。
+  const sessionIdRef = useRef(problemId);
+  // problem 切换时重置
+  useEffect(() => {
+    sessionIdRef.current = problemId;
+  }, [problemId]);
+
   // stream_delta 累积: Claude SDK 实时流不发完整 assistant text,而是连续
   // stream_delta 推送文本片段。这里 accum 到 ref,100ms 批量 flush 一次
   // (与 chat 路径 useChatRealtimeHandlers 保持一致),避免每个 delta 重渲染。
@@ -179,8 +188,20 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     return subscribe((event) => {
       const ev = event as OnsiteChatFrame;
 
+      // session_created:首次 run 后服务端转发的 UUID,更新 sessionIdRef,
+      // 让后续 chat.send/abort 用 UUID 发包,CLI --resume 也指向同一 UUID。
+      if (ev.kind === 'session_created') {
+        const newId = (ev as Record<string, unknown>).newSessionId as string | undefined
+          ?? ev.sessionId;
+        if (newId && typeof newId === 'string') {
+          sessionIdRef.current = newId;
+        }
+        return;
+      }
+
       // Only react to frames tagged for this problem.
-      if (ev.sessionId && ev.sessionId !== problemId) return;
+      // sessionId 可能已更新为 UUID(sessionIdRef),两条都接受。
+      if (ev.sessionId && ev.sessionId !== problemId && ev.sessionId !== sessionIdRef.current) return;
       // If sessionId is missing, treat it as "for current problem" — the
       // server only allows one hello per WS so the only other sessionId
       // we'd see is the active problem's.
@@ -364,15 +385,15 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       ...cur,
       { id: makeId(), role: 'user', kind: 'text', text, ts: Date.now() },
     ]);
-    // Reuse chat.send envelope (server already routes this through the
-    // onsite WS once ws.kind === 'onsite' is set on the socket).
-    send({ type: 'chat.send', sessionId: problemId, content: text });
+    // sessionIdRef 在收到 session_created 后已更新为 UUID,
+    // 与 CLI --resume 指向同一 session。
+    send({ type: 'chat.send', sessionId: sessionIdRef.current, content: text });
     setDraft('');
     setSending(false);
   };
 
   const abort = () => {
-    send({ type: 'chat.abort', sessionId: problemId });
+    send({ type: 'chat.abort', sessionId: sessionIdRef.current });
   };
 
   // Insert text into the composer draft and focus it (used by SQL template
@@ -553,7 +574,7 @@ function MessageBubble({
 
   const baseCls = useMemo(() => {
     if (isUser) return 'ml-auto max-w-[80%] rounded-2xl bg-blue-500 px-3 py-2 text-sm text-white shadow-sm';
-    if (isAssistant) return 'mr-auto max-w-[80%] whitespace-pre-wrap text-sm text-foreground';
+    if (isAssistant) return 'mr-auto max-w-[80%] whitespace-pre-wrap rounded-2xl bg-card border border-border px-3 py-2 text-sm text-foreground shadow-sm';
     return 'ml-6 mr-6 rounded-md bg-muted/50 px-2 py-1 font-mono text-[11px] text-muted-foreground';
   }, [isUser, isAssistant]);
 

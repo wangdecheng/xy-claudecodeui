@@ -88,8 +88,15 @@ export class ChatSessionWriter {
       if (announcedId) {
         this.captureProviderSessionId(announcedId);
       }
-      // Swallowed on purpose: the frontend already has the stable app session
-      // id, so there is no client-side handoff to perform anymore.
+      // chat 路径:吞掉,前端已有稳定的 app session_id 不需要 handoff。
+      // onsite 路径:必须转发给前端,让 OnsiteChatStream 更新本地 sessionId
+      // 为 UUID,后续 chat.send 直接用 UUID,CLI --resume 也指向同一 UUID。
+      if ((this.ws as Record<string, unknown>).kind === 'onsite') {
+        this.forward({
+          ...message,
+          sessionId: this.providerSessionId,
+        });
+      }
       return;
     }
 
