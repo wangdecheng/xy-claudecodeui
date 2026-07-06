@@ -19,7 +19,9 @@
  *    (hidden before that — was previously shown as a disabled drop-zone, but
  *    that confused users into thinking the uploader was broken).
  *  - submit → POST /problems → on success reload list (modal stays open so
- *    user can immediately upload logs).
+ *    user can upload logs). Footer swaps: "创建问题" → "开始分析" (primary),
+ *    which calls selectProblem(id) + navigate(/onsite/:id) + onClose — same
+ *    path IssueListItem takes when the user clicks a problem in the sidebar.
  *
  * Layout (three-section modal, see pattern in TaskHelpModal.tsx):
  *  - header (sticky): title + X + subtitle — always visible
@@ -32,8 +34,9 @@
  *    the modal from the buttons.
  */
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useNavigate } from 'react-router-dom';
 import { X } from 'lucide-react';
 
 import { authenticatedFetch } from '../../utils/api';
@@ -57,10 +60,12 @@ interface CreateResponse {
 
 export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   const { t } = useTranslation(['onsite', 'common']);
+  const navigate = useNavigate();
   const store = useOnsiteStore();
   const config = store.config;
   const loadConfig = store.loadConfig;
   const loadProblems = store.loadProblems;
+  const selectProblem = store.selectProblem;
 
   const [customer, setCustomer] = useState('');
   const [iteration, setIteration] = useState('');
@@ -157,6 +162,14 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
       setCreating(false);
     }
   };
+
+  // 创建成功后跳分析:与 IssueListItem 走同一条链路(selectProblem + navigate + 关 modal)
+  const handleStartAnalysis = useCallback(() => {
+    if (!createdId) return;
+    selectProblem(createdId);
+    navigate(`/onsite/${encodeURIComponent(createdId)}`);
+    onClose();
+  }, [createdId, selectProblem, navigate, onClose]);
 
   if (!open) return null;
 
@@ -268,16 +281,20 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           {createdId && <LogUploader problemId={createdId} />}
         </div>
 
-        {/* Sticky footer — "返回/提交" 始终可见,创建后也能点 X 或"返回"关掉 modal */}
+        {/* Sticky footer — 创建前:"返回" + "创建问题";创建后:"返回" + "开始分析" */}
         <div className="flex justify-end gap-2 border-t border-border bg-card px-5 py-3">
           <button
             type="button"
             onClick={onClose}
-            className="rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted"
+            className={
+              createdId
+                ? 'rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground'
+                : 'rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted'
+            }
           >
             {t('onsite:common.back')}
           </button>
-          {!createdId && (
+          {!createdId ? (
             <button
               type="submit"
               data-testid="onsite-wizard-submit"
@@ -285,6 +302,15 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
             >
               {creating ? t('onsite:common.loading') : t('onsite:wizard.submit')}
+            </button>
+          ) : (
+            <button
+              type="button"
+              data-testid="onsite-wizard-start-analysis"
+              onClick={handleStartAnalysis}
+              className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
+            >
+              {t('onsite:wizard.startAnalysis', { defaultValue: '开始分析' })}
             </button>
           )}
         </div>

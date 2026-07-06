@@ -23,6 +23,7 @@
     "upload": "上传日志/资料(可选)",
     "uploadHint": "支持 .zip / .tar.gz,单文件 ≤ 200MB,最多 20 个",
     "submit": "创建问题",
+    "startAnalysis": "开始分析",
     "createSuccess": "问题创建成功",
     "createFailed": "创建失败,请稍后重试",
     "descriptionField": "问题描述",
