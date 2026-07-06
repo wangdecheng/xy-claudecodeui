@@ -76,6 +76,19 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     setCreatedId(null);
   }, [open, loadConfig, loadProblems]);
 
+  // ESC 关闭 modal(REQ-1.11)
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.stopPropagation();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open, onClose]);
+
   const configOk = config?.status === 'OK';
   const customers = config?.data.customers ?? [];
   const isFirstCustomer = useMemo(() => {
@@ -133,12 +146,14 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   return (
     <div
       data-testid="onsite-new-issue-wizard"
+      onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
     >
       <form
         onSubmit={handleSubmit}
+        onClick={(e) => e.stopPropagation()}
         className="flex w-full max-w-md flex-col gap-4 rounded-lg border border-border bg-card p-5 shadow-xl"
       >
         <header className="flex flex-col gap-1">
