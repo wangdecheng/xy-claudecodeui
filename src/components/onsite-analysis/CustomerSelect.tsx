@@ -64,12 +64,23 @@ export default function CustomerSelect({
         <option value="" disabled>
           {t('onsite:wizard.customerPlaceholder')}
         </option>
-        {customers.map((c) => (
-          <option key={c.label} value={c.label}>
-            {c.label}
-            {c.branch === null ? ` (${t('onsite:wizard.noThirdParty')})` : ''}
-          </option>
-        ))}
+        {customers.map((c) => {
+          // label 自带「（」/「(」 或 label === branch 时不附加后缀;
+          // branch === null 时附加「(无三平台分支)」标记
+          const hasInline = /[（(]/.test(c.label) || c.label === c.branch;
+          const suffix =
+            c.branch === null
+              ? ` (${t('onsite:wizard.noThirdParty')})`
+              : hasInline
+                ? ''
+                : `（${c.branch}）`;
+          return (
+            <option key={c.label} value={c.label}>
+              {c.label}
+              {suffix}
+            </option>
+          );
+        })}
       </select>
     </div>
   );
