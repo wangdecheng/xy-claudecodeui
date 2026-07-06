@@ -275,17 +275,54 @@ export const problemService = {
   },
 
   async getById(id: string): Promise<ProblemRecord | null> {
+    // DB 优先(D-3 磁盘为权威,但 DB 是快路径)
     const row = onsiteProblemsDb.findById(id);
-    if (!row) return null;
+    if (row) {
+      return {
+        id: row.id,
+        customer: row.customer,
+        third_bridge_branch: row.third_bridge_branch,
+        iteration: row.iteration,
+        database: row.database,
+        status: row.status,
+        cwd: row.cwd,
+        problem_json_path: row.problem_json_path,
+      };
+    }
+    // DB miss 时回退磁盘:可能是终端 agent 提前建的目录(无 problem.json 或 DB 未同步)
+    const root = resolveOnsiteRoot();
+    const dirPath = path.join(root, id);
+    if (!existsSync(dirPath)) return null;
+
+    let status = 'pending_info';
+    let customer = extractCustomer(id);
+    let iteration: string | null = null;
+    let database: string | null = null;
+    let thirdBridgeBranch: string | null = null;
+    const jsonPath = path.join(dirPath, 'problem.json');
+    try {
+      const raw = await readFile(jsonPath, 'utf8');
+      const json = JSON.parse(raw) as Record<string, unknown>;
+      status = deriveStatusFromProblemJson(json);
+      if (typeof json.customer === 'string') customer = json.customer;
+      if (typeof json.iteration === 'string') iteration = json.iteration;
+      if (typeof json.database === 'string') database = json.database;
+      if (typeof json.third_bridge_branch === 'string' || json.third_bridge_branch === null) {
+        thirdBridgeBranch = (json.third_bridge_branch as string | null) ?? null;
+      }
+    } catch {
+      // no problem.json — keep defaults
+    }
+
     return {
-      id: row.id,
-      customer: row.customer,
-      third_bridge_branch: row.third_bridge_branch,
-      iteration: row.iteration,
-      database: row.database,
-      status: row.status,
-      cwd: row.cwd,
-      problem_json_path: row.problem_json_path,
+      id,
+      customer,
+      third_bridge_branch: thirdBridgeBranch,
+      iteration: iteration ?? resolveDefaultIteration(),
+      database: database ?? '',
+      status,
+      cwd: dirPath,
+      problem_json_path: existsSync(jsonPath) ? jsonPath : null,
     };
   },
 };

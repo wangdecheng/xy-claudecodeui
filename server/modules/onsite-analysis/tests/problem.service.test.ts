@@ -167,6 +167,32 @@ test('create cwd 越界(/etc) -> 抛 CwdEscapeError', async () => {
   });
 });
 
+test('getById 在 DB miss 但磁盘有目录时回退到磁盘扫描(兼容终端 agent 预建)', async () => {
+  await withIsolatedEnv(async () => {
+    const root = process.env.ONSITE_ROOT!;
+    // 模拟终端 agent 提前建的目录,只有 session-context.json,没有 problem.json,DB 也没行
+    const dir = path.join(root, '20260101-legacy-no-problem-json');
+    await mkdir(dir, { recursive: true });
+    await writeFile(path.join(dir, 'session-context.json'), JSON.stringify({ traceId: 'abc' }), 'utf8');
+
+    const found = await problemService.getById('20260101-legacy-no-problem-json');
+    assert.ok(found, 'getById 应从磁盘回退返回该目录');
+    assert.equal(found!.id, '20260101-legacy-no-problem-json');
+    assert.equal(found!.customer, 'legacy-no-problem-json');
+    assert.equal(found!.status, 'pending_info');
+    assert.equal(found!.database, '');
+    assert.equal(found!.problem_json_path, null);
+    assert.equal(found!.cwd, dir);
+  });
+});
+
+test('getById 在 DB miss 且磁盘无目录时返回 null', async () => {
+  await withIsolatedEnv(async () => {
+    const missing = await problemService.getById('does-not-exist-anywhere');
+    assert.equal(missing, null);
+  });
+});
+
 test('create description 为空字符串 -> 抛 DescriptionRequiredError', async () => {
   await withIsolatedEnv(async () => {
     const cwd = process.env.ONSITE_ROOT + '/20260101-X';
