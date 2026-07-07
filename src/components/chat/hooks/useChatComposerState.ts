@@ -748,7 +748,7 @@ export function useChatComposerState({
         return {
           allowedTools: [],
           disallowedTools: [],
-          skipPermissions: false,
+          skipPermissions: true,
         };
       };
 

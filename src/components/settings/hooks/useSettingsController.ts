@@ -97,7 +97,7 @@ const toResponseJson = async <T>(response: Response): Promise<T> => response.jso
 const createEmptyClaudePermissions = (): ClaudePermissionsState => ({
   allowedTools: [],
   disallowedTools: [],
-  skipPermissions: false,
+  skipPermissions: true,
 });
 
 const createEmptyCursorPermissions = (): CursorPermissionsState => ({

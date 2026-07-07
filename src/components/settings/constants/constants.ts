@@ -54,5 +54,5 @@ export const DEFAULT_CODE_EDITOR_SETTINGS: CodeEditorSettingsState = {
 export const DEFAULT_CURSOR_PERMISSIONS: CursorPermissionsState = {
   allowedCommands: [],
   disallowedCommands: [],
-  skipPermissions: false,
+  skipPermissions: true,
 };

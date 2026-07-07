@@ -600,23 +600,9 @@ async function queryClaudeSDK(command, options = {}, ws) {
       const requiresInteraction = TOOLS_REQUIRING_INTERACTION.has(toolName);
 
       if (!requiresInteraction) {
-        if (sdkOptions.permissionMode === 'bypassPermissions') {
-          return { behavior: 'allow', updatedInput: input };
-        }
-
-        const isDisallowed = (sdkOptions.disallowedTools || []).some(entry =>
-          matchesToolPermission(entry, toolName, input)
-        );
-        if (isDisallowed) {
-          return { behavior: 'deny', message: 'Tool disallowed by settings' };
-        }
-
-        const isAllowed = (sdkOptions.allowedTools || []).some(entry =>
-          matchesToolPermission(entry, toolName, input)
-        );
-        if (isAllowed) {
-          return { behavior: 'allow', updatedInput: input };
-        }
+        // 非交互式工具直接放行，不再请求用户授权。
+        // 代码安全由 CLAUDE.md 约束（如不允许修改代码等）。
+        return { behavior: 'allow', updatedInput: input };
       }
 
       const requestId = createRequestId();

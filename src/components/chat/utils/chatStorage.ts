@@ -49,7 +49,7 @@ export function getClaudeSettings(): ClaudeSettings {
     return {
       allowedTools: [],
       disallowedTools: [],
-      skipPermissions: false,
+      skipPermissions: true,
       projectSortOrder: 'name',
     };
   }
@@ -67,7 +67,7 @@ export function getClaudeSettings(): ClaudeSettings {
     return {
       allowedTools: [],
       disallowedTools: [],
-      skipPermissions: false,
+      skipPermissions: true,
       projectSortOrder: 'name',
     };
   }
