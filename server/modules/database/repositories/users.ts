@@ -129,6 +129,15 @@ export const userDb = {
     ).run(userId);
   },
 
+  /** Updates the password hash for an existing user (supports password reset via config). */
+  updatePassword(userId: number, passwordHash: string): void {
+    const db = getConnection();
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(
+      passwordHash,
+      userId
+    );
+  },
+
   /** Returns true if the user has finished the onboarding flow. */
   hasCompletedOnboarding(userId: number): boolean {
     const db = getConnection();

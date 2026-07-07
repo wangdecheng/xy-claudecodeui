@@ -23,10 +23,6 @@ export type AuthUserPayload = {
   user?: AuthUser;
 };
 
-export type OnboardingStatusPayload = {
-  hasCompletedOnboarding?: boolean;
-};
-
 export type ApiErrorPayload = {
   error?: string;
   message?: string;
@@ -37,12 +33,9 @@ export type AuthContextValue = {
   token: string | null;
   isLoading: boolean;
   needsSetup: boolean;
-  hasCompletedOnboarding: boolean;
   error: string | null;
   login: (username: string, password: string) => Promise<AuthActionResult>;
-  register: (username: string, password: string) => Promise<AuthActionResult>;
   logout: () => void;
-  refreshOnboardingStatus: () => Promise<void>;
 };
 
 export type AuthProviderProps = {

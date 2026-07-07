@@ -1736,6 +1736,55 @@ async function removeLocalServerMarker() {
 }
 
 // Initialize database and start server
+/**
+ * 从 config/users.json 同步用户到数据库。
+ * - 新用户：bcrypt 哈希后 INSERT
+ * - 已存在用户：UPDATE password_hash（支持重置密码）
+ * 配置文件不存在或格式错误时打印警告，不阻断启动。
+ */
+async function syncUsersFromConfig(appRoot) {
+    const configPath = path.join(appRoot, 'config', 'users.json');
+    if (!fs.existsSync(configPath)) {
+        console.log(`${c.warn('[WARN]')} config/users.json 不存在，跳过用户同步`);
+        return;
+    }
+
+    let config;
+    try {
+        config = JSON.parse(fs.readFileSync(configPath, 'utf8'));
+    } catch (err) {
+        console.warn(`${c.warn('[WARN]')} config/users.json 解析失败:`, err.message);
+        return;
+    }
+
+    if (!Array.isArray(config.users) || config.users.length === 0) {
+        console.warn(`${c.warn('[WARN]')} config/users.json 中没有配置任何用户`);
+        return;
+    }
+
+    const bcrypt = await import('bcrypt');
+    const saltRounds = 12;
+    const { userDb } = await import('./modules/database/index.js');
+
+    for (const u of config.users) {
+        if (!u.username || !u.password) {
+            console.warn(`${c.warn('[WARN]')} 跳过无效用户配置: ${JSON.stringify(u)}`);
+            continue;
+        }
+
+        const passwordHash = await bcrypt.default.hash(u.password, saltRounds);
+        const existing = userDb.getUserByUsername(u.username);
+
+        if (existing) {
+            userDb.updatePassword(existing.id, passwordHash);
+            console.log(`${c.info('[INFO]')} 已更新用户密码: ${u.username}`);
+        } else {
+            userDb.createUser(u.username, passwordHash);
+            console.log(`${c.info('[INFO]')} 已创建用户: ${u.username}`);
+        }
+    }
+}
+
 async function startServer() {
     try {
         // Initialize authentication database. A migration-integrity
@@ -1750,6 +1799,9 @@ async function startServer() {
         } catch (initErr) {
             handleMigrationCorruption(initErr);
         }
+
+        // 从 config/users.json 同步用户到数据库（密码 bcrypt 哈希）
+        await syncUsersFromConfig(APP_ROOT);
 
         // Configure Web Push (VAPID keys)
         configureWebPush();
