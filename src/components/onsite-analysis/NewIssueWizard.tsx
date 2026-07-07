@@ -52,6 +52,30 @@ export interface NewIssueWizardProps {
   onClose: () => void;
 }
 
+/**
+ * 把 wizard 收集的四项必填信息组装成首轮开场 prompt。
+ * 设计:逐项罗列 + 一句明确指令,让 Claude 拿到结构化上下文后直接进入取证,
+ * 而不是反问「客户/迭代/数据库是什么」。description 为空则返回空串(不预置)。
+ */
+function buildInitialPrompt(input: {
+  customer: string;
+  iteration: string;
+  database: string;
+  description: string;
+}): string {
+  const desc = input.description.trim();
+  if (!desc) return '';
+  const lines = [
+    `客户:${input.customer}`,
+    `版本:${input.iteration}`,
+    `数据库:${input.database}`,
+    `问题描述:${desc}`,
+    '',
+    '请基于以上信息开始现场取证:先定位相关服务分支与日志,再逐步排查根因。',
+  ];
+  return lines.join('\n');
+}
+
 interface CreateResponse {
   id?: string;
   error?: string;
@@ -66,6 +90,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   const loadConfig = store.loadConfig;
   const loadProblems = store.loadProblems;
   const selectProblem = store.selectProblem;
+  const setInitialPrompt = store.setInitialPrompt;
 
   const [customer, setCustomer] = useState('');
   const [iteration, setIteration] = useState('');
@@ -163,13 +188,25 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     }
   };
 
-  // 创建成功后跳分析:与 IssueListItem 走同一条链路(selectProblem + navigate + 关 modal)
+  // 创建成功后跳分析:与 IssueListItem 走同一条链路(selectProblem + navigate + 关 modal)。
+  // 同时把 wizard 收集到的客户/迭代/数据库/问题描述组装成首轮开场 prompt,
+  // 预置到 store;OnsiteChatStream mount 后自动发一帧 chat.send,免去用户手敲首轮。
   const handleStartAnalysis = useCallback(() => {
     if (!createdId) return;
+    // 只在确实填了 description(canSubmit 已保证)时才预置首轮 prompt。
+    const prompt = buildInitialPrompt({
+      customer,
+      iteration,
+      database,
+      description: description.trim(),
+    });
+    if (prompt) {
+      setInitialPrompt(createdId, prompt);
+    }
     selectProblem(createdId);
     navigate(`/onsite/${encodeURIComponent(createdId)}`);
     onClose();
-  }, [createdId, selectProblem, navigate, onClose]);
+  }, [createdId, selectProblem, navigate, onClose, setInitialPrompt, customer, iteration, database, description]);
 
   if (!open) return null;
 

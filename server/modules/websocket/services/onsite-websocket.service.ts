@@ -115,6 +115,12 @@ type HelloContext = {
   userId: string | null;
 };
 
+type OnsiteWebSocket = WebSocket & {
+  kind?: string;
+  onsite?: HelloContext;
+  onsiteSendWrapped?: boolean;
+};
+
 /**
  * 幂等地确保某个 onsite problem 的 session 行存在(kind='onsite')。
  * chat.send 用 sessionId=problemId 查 sessionsDb;缺行则 SESSION_NOT_FOUND。
@@ -156,14 +162,24 @@ function ensureOnsiteSession(problemId: string, cwd: string): void {
  * 这是 Batch 8 I1 的服务端持久化入口,放在这里确保不污染 chat 路径。
  */
 function attachHelloContext(ws: WebSocket, ctx: HelloContext): void {
+  const onsiteWs = ws as OnsiteWebSocket;
   // 给 ws 打上 kind 标记 — discipline 中间件的 enabledFor(ws) 据此决定是否挂
-  (ws as WebSocket & { kind?: string }).kind = 'onsite';
-  (ws as WebSocket & { onsite?: HelloContext }).onsite = ctx;
+  onsiteWs.kind = 'onsite';
+  onsiteWs.onsite = ctx;
+
+  if (onsiteWs.onsiteSendWrapped) {
+    return;
+  }
+  onsiteWs.onsiteSendWrapped = true;
 
   const originalSend = ws.send.bind(ws);
   ws.send = ((data: unknown, ...args: unknown[]) => {
     if (typeof data === 'string') {
       try {
+        const currentCtx = (ws as OnsiteWebSocket).onsite;
+        if (!currentCtx) {
+          return originalSend(data as never, ...(args as []));
+        }
         const parsed = JSON.parse(data) as Record<string, unknown>;
         const kind = parsed.kind;
         const role = parsed.role;
@@ -176,7 +192,7 @@ function attachHelloContext(ws: WebSocket, ctx: HelloContext): void {
             : (typeof parsed.text === 'string' ? parsed.text : '');
           const ts = typeof parsed.ts === 'number' ? parsed.ts : Date.now();
           const stored: StoredMessage = {
-            problemId: ctx.problemId,
+            problemId: currentCtx.problemId,
             role,
             kind: kind as StoredMessage['kind'],
             content,
@@ -227,23 +243,31 @@ export const onsiteWebSocketService = {
 
       let helloReceived = false;
 
-      ws.once('message', (raw) => {
-        helloReceived = true;
+      ws.on('message', (raw) => {
         try {
           const parsed = parseIncomingJsonObject(raw);
           if (!parsed) {
-            sendProtocolError('INVALID_JSON', 'hello frame must be valid JSON');
-            ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, 'invalid hello frame');
+            if (!helloReceived) {
+              sendProtocolError('INVALID_JSON', 'hello frame must be valid JSON');
+              ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, 'invalid hello frame');
+            }
+            return;
+          }
+
+          if ((parsed as Record<string, unknown>).kind !== ONSITE_HELLO_KIND) {
             return;
           }
 
           const validation = validateOnsiteHelloFrame(parsed);
           if (!validation.ok) {
             sendProtocolError('HELLO_INVALID', validation.reason);
-            ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, validation.reason);
+            if (!helloReceived) {
+              ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, validation.reason);
+            }
             return;
           }
 
+          helloReceived = true;
           attachHelloContext(ws, {
             problemId: validation.payload.problemId,
             cwd: validation.payload.cwd,

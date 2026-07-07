@@ -52,6 +52,13 @@ export interface OnsiteStoreState {
   uploading: Record<string, number>;
   /** Uploaded/extracted files keyed by problemId; from GET /problems/:id/files. */
   files: Record<string, OnsiteFile[]>;
+  /**
+   * 首轮开场 prompt,按 problemId 单次存放。
+   * NewIssueWizard 创建问题后把 wizard 收集的客户/迭代/数据库/问题描述
+   * 组装成一段 prompt 塞进来,OnsiteChatStream mount 后若发现自己 problemId
+   * 有 pending 就自动发一帧 chat.send,发完立刻 take 清掉,避免重复发送。
+   */
+  pendingInitialPrompt: Record<string, string>;
   lastError: string | null;
   lastFetchedAt: number;
 }
@@ -66,6 +73,17 @@ export interface OnsiteStoreActions {
    * Idempotent — re-selecting the same id is a no-op.
    */
   selectProblem: (id: string | null) => void;
+  /**
+   * 为指定 problem 预置一段首轮开场 prompt(NewIssueWizard 创建问题后调用)。
+   * OnsiteChatStream mount 后若该 problem 有 pending,会自动发一帧 chat.send
+   * 并通过 takeInitialPrompt 清掉,避免重复发送。
+   */
+  setInitialPrompt: (id: string, prompt: string) => void;
+  /**
+   * 取走(并删除)指定 problem 的首轮 prompt。OnsiteChatStream 发完首轮后调用,
+   * 保证只发一次——页面刷新/重挂载后不会再发。
+   */
+  takeInitialPrompt: (id: string) => string | null;
   /** PATCH /api/onsite/problems/:id with new status + reason. */
   patchStatus: (id: string, to: ProblemStatus, reason: string) => Promise<ProblemRecord | null>;
   /**
@@ -105,6 +123,7 @@ const INITIAL_STATE: OnsiteStoreState = {
   currentProblemId: null,
   uploading: {},
   files: {},
+  pendingInitialPrompt: {},
   lastError: null,
   lastFetchedAt: 0,
 };
@@ -205,6 +224,26 @@ export function useOnsiteStore(): OnsiteStore {
     if (stateRef.current.currentProblemId === id) return;
     stateRef.current.currentProblemId = id;
     notify();
+  }, [notify]);
+
+  const setInitialPrompt = useCallback((id: string, prompt: string): void => {
+    if (!id || !prompt.trim()) return;
+    stateRef.current.pendingInitialPrompt = {
+      ...stateRef.current.pendingInitialPrompt,
+      [id]: prompt,
+    };
+    notify();
+  }, [notify]);
+
+  const takeInitialPrompt = useCallback((id: string): string | null => {
+    const pending = stateRef.current.pendingInitialPrompt[id];
+    if (!pending) return null;
+    // 浅拷贝后删 key,再整体替换引用以触发 notify
+    const next = { ...stateRef.current.pendingInitialPrompt };
+    delete next[id];
+    stateRef.current.pendingInitialPrompt = next;
+    notify();
+    return pending;
   }, [notify]);
 
   const patchStatus = useCallback(
@@ -397,11 +436,14 @@ export function useOnsiteStore(): OnsiteStore {
       currentProblemId: state.currentProblemId,
       uploading: state.uploading,
       files: state.files,
+      pendingInitialPrompt: state.pendingInitialPrompt,
       lastError: state.lastError,
       lastFetchedAt: state.lastFetchedAt,
       loadConfig,
       loadProblems,
       selectProblem,
+      setInitialPrompt,
+      takeInitialPrompt,
       patchStatus,
       uploadFiles,
       loadFiles,
@@ -422,6 +464,8 @@ export function useOnsiteStore(): OnsiteStore {
     uploadFiles,
     loadFiles,
     loadMessages,
+    setInitialPrompt,
+    takeInitialPrompt,
     getProblem,
     getUploadProgress,
     getAnyUploading,

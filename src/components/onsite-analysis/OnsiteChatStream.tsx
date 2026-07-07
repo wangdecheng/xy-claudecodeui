@@ -21,20 +21,21 @@
  * panel open for the session. (Persistence is out of scope.)
  */
 
-import { useEffect, useMemo, useRef, useState } from 'react';
-import { useTranslation } from 'react-i18next';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Database, Paperclip, Send, StopCircle } from 'lucide-react';
-
+import { useTranslation } from 'react-i18next';
 import type { OnsiteChatFrame, ProblemRecord } from '@shared/onsite-types';
 
 import { cn } from '../../lib/utils';
-import { useOnsiteStore } from '../../stores/onsiteStore';
 import { useOnsiteWebSocket } from '../../contexts/OnsiteWebSocketContext';
+import { useOnsiteStore } from '../../stores/onsiteStore';
+
 import AnalysisFilesRow from './AnalysisFilesRow';
 import AnalysisInfoChips from './AnalysisInfoChips';
 import CardRenderer from './cards/CardRenderer';
 import CwdLockView from './CwdLockView';
 import DisciplineCounter from './DisciplineCounter';
+import { initialOnsiteRunState, reduceOnsiteRunState } from './onsiteRunState';
 import { sqlTemplateFor } from './sqlTemplates';
 import StatusBadge from './StatusBadge';
 
@@ -82,10 +83,12 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const problem: ProblemRecord | undefined = getProblem(problemId);
   const files = store.getFiles(problemId);
   const loadMessages = store.loadMessages;
+  const takeInitialPrompt = store.takeInitialPrompt;
 
   const [messages, setMessages] = useState<OnsiteStreamMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [runState, setRunState] = useState(initialOnsiteRunState);
   const [discipline, setDiscipline] = useState<DisciplineState>({
     softening: 0,
     writeOriginalLog: 0,
@@ -173,6 +176,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     setMessages([]);
     setDiscipline({ softening: 0, writeOriginalLog: 0, log: [] });
     setDraft('');
+    setRunState(initialOnsiteRunState);
     // 重置流累积状态,防止上一个 problem 的 stream_delta 残余泄漏
     if (streamTimerRef.current) {
       clearTimeout(streamTimerRef.current);
@@ -180,7 +184,6 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     }
     accumulatedRef.current = '';
     streamingMsgIdRef.current = `streaming-${Date.now()}`;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [problemId]);
 
   // Subscribe to WS frames.
@@ -196,6 +199,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
         if (newId && typeof newId === 'string') {
           sessionIdRef.current = newId;
         }
+        return;
+      }
+
+      if (ev.kind === 'protocol_error') {
+        setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
         return;
       }
 
@@ -310,6 +318,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           }, 100);
         }
       } else if (ev.kind === 'complete') {
+        setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
         // 流结束: 刷新剩余累积文本,重置 accum state
         if (streamTimerRef.current) {
           clearTimeout(streamTimerRef.current);
@@ -376,23 +385,49 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
   // ─── actions ────────────────────────────────────────────────────────
 
+  /**
+   * 发送一条文本消息(首轮开场 prompt 与 composer 手敲共用同一通路)。
+   * 乐观插入 user 气泡 → 发 chat.send → 按是否被 ws 层接受更新 runState。
+   */
+  const sendText = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || !isConnected) return false;
+    setSending(true);
+    setMessages((cur) => [
+      ...cur,
+      { id: makeId(), role: 'user', kind: 'text', text: trimmed, ts: Date.now() },
+    ]);
+    const accepted = send({ type: 'chat.send', sessionId: sessionIdRef.current, content: trimmed });
+    setRunState((state) => reduceOnsiteRunState(
+      state,
+      { type: accepted ? 'send.accepted' : 'send.rejected' },
+    ));
+    setSending(false);
+    return accepted;
+  }, [isConnected, send]);
+
+  // 首轮开场 prompt 自动发送:NewIssueWizard 创建问题后会把客户/迭代/数据库/
+  // 问题描述组装成的 prompt 预置到 store。本组件 mount + WS 就绪后若发现自己
+  // problemId 有 pending,自动发一帧并 take 清掉,避免重复发送。
+  // 必须等 isConnected:true 才发——否则 send 返回 false,prompt 仍留在 store,
+  // 等 WS 重连后本 effect 重跑(isConnected 进 deps)再发。
+  useEffect(() => {
+    if (!problemId || !isConnected) return;
+    const prompt = takeInitialPrompt(problemId);
+    if (!prompt) return;
+    sendText(prompt);
+  }, [problemId, isConnected, takeInitialPrompt, sendText]);
+
   const sendDraft = () => {
     const text = draft.trim();
     if (!text || !isConnected) return;
-    setSending(true);
-    // Optimistic user message.
-    setMessages((cur) => [
-      ...cur,
-      { id: makeId(), role: 'user', kind: 'text', text, ts: Date.now() },
-    ]);
-    // sessionIdRef 在收到 session_created 后已更新为 UUID,
-    // 与 CLI --resume 指向同一 session。
-    send({ type: 'chat.send', sessionId: sessionIdRef.current, content: text });
-    setDraft('');
-    setSending(false);
+    if (sendText(text)) {
+      setDraft('');
+    }
   };
 
   const abort = () => {
+    setRunState((state) => reduceOnsiteRunState(state, { type: 'abort.requested' }));
     send({ type: 'chat.abort', sessionId: sessionIdRef.current });
   };
 
@@ -529,7 +564,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           <button
             type="button"
             onClick={sendDraft}
-            disabled={!isConnected || draft.trim().length === 0 || sending}
+            disabled={!isConnected || draft.trim().length === 0 || sending || runState.isProcessing}
             data-testid="onsite-chat-send"
             className="inline-flex items-center gap-1 rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-50"
           >
@@ -539,7 +574,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           <button
             type="button"
             onClick={abort}
-            disabled={!isConnected}
+            disabled={!isConnected || !runState.isProcessing}
             data-testid="onsite-chat-abort"
             className="inline-flex items-center gap-1 rounded-md border border-input bg-background px-3 py-1.5 text-xs font-medium text-foreground hover:bg-muted disabled:cursor-not-allowed disabled:opacity-50"
           >

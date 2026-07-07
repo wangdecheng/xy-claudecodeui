@@ -18,8 +18,7 @@
  * Spec: REQ-onite-history-replay
  */
 
-import { promises as fs } from 'node:fs';
-import { readdirSync } from 'node:fs';
+import { promises as fs, readdirSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -41,9 +40,14 @@ interface RawJsonlLine {
 }
 
 function encodeProjectPath(cwd: string): string {
-  // Claude Code: 把 / → -,保留首尾 -。
-  // /Users/xylink/work/foo → -Users-xylink-work-foo
-  return cwd.replace(/\//g, '-');
+  // 与 Claude Code 磁盘目录命名一致:把所有「非字母数字且非 -」的字符
+  // 替换为 -(参考 server/index.js 中 encodedPath 的同一规则)。
+  // 关键:`/` 与非 ASCII 字符(如中文 problem 目录名「不涉及三方对接」)
+  // 都会被替换成 -,因此 /Users/.../20260707-不涉及三方对接
+  // → -Users-...-20260707--------
+  // 旧实现只 replace(/\//g, '-') 会保留中文,与真实磁盘目录对不上,
+  // 导致含中文的 onsite problem 永远扫不到 JSONL、历史加载为空。
+  return cwd.replace(/[^a-zA-Z0-9-]/g, '-');
 }
 
 function basenameSlug(cwd: string): string {
@@ -52,10 +56,26 @@ function basenameSlug(cwd: string): string {
   return parts[parts.length - 1] ?? '';
 }
 
+function normalizeCwd(cwd: string): string {
+  return path.resolve(cwd);
+}
+
 function isUserTextLine(line: RawJsonlLine): string | null {
   if (line.type !== 'user') return null;
   const c = line.message?.content;
   if (typeof c === 'string' && c.trim().length > 0) return c;
+  if (Array.isArray(c)) {
+    const parts: string[] = [];
+    for (const block of c) {
+      if (block && typeof block === 'object' && (block as { type?: string }).type === 'text') {
+        const text = (block as { text?: unknown }).text;
+        if (typeof text === 'string' && text.trim().length > 0) {
+          parts.push(text);
+        }
+      }
+    }
+    if (parts.length > 0) return parts.join('\n');
+  }
   return null;
 }
 
@@ -86,9 +106,11 @@ function lineTimestamp(line: RawJsonlLine): number {
  * 这是判断一个 JSONL 文件(或其中一段)是否属于本 problem 的关键信号,
  * 因为同一 Claude project 目录下会同时存在多个 problem 的 session 文件。
  */
-function lineHasSlug(line: RawJsonlLine, cwdSlug: string): boolean {
+function lineAnchorsProblem(line: RawJsonlLine, cwdSlug: string, problemCwd: string): boolean {
+  if (problemCwd && typeof line.cwd === 'string') {
+    if (normalizeCwd(line.cwd) === normalizeCwd(problemCwd)) return true;
+  }
   if (!cwdSlug) return true; // 没传 slug 时不过滤(兼容旧调用)
-  if (line.type !== 'user') return false;
   const text = isUserTextLine(line);
   if (!text) return false;
   return text.includes(cwdSlug);
@@ -110,6 +132,7 @@ export function parseJsonlToMessages(
   problemId: string,
   createdAtMs: number,
   cwdSlug: string,
+  problemCwd: string = '',
 ): StoredMessage[] {
   const lines = content.split('\n');
   const parsed: RawJsonlLine[] = [];
@@ -124,7 +147,7 @@ export function parseJsonlToMessages(
   }
   // cwdSlug 非空时,先做「整文件是否锚定」判定,避免在多 problem 共享 project
   // 目录的情况下把所有 session 的消息都喂给本 problem。
-  if (cwdSlug && !parsed.some((l) => lineHasSlug(l, cwdSlug))) {
+  if ((cwdSlug || problemCwd) && !parsed.some((l) => lineAnchorsProblem(l, cwdSlug, problemCwd))) {
     return [];
   }
 
@@ -164,8 +187,8 @@ export function parseJsonlToMessages(
  * 找到 problem.cwd 对应的 Claude Code project 目录下的所有 .jsonl 文件。
  * 失败(目录不存在/无权限)→ 返回空数组,调用方继续。
  */
-function listProjectJsonlFiles(projectCwd: string, claudeHome: string): string[] {
-  const projectDir = path.join(claudeHome, encodeProjectPath(projectCwd));
+function listJsonlFilesForCwd(cwd: string, claudeHome: string): string[] {
+  const projectDir = path.join(claudeHome, encodeProjectPath(cwd));
   let entries: string[];
   try {
     entries = readdirSync(projectDir);
@@ -175,6 +198,20 @@ function listProjectJsonlFiles(projectCwd: string, claudeHome: string): string[]
   return entries
     .filter((name) => name.endsWith('.jsonl'))
     .map((name) => path.join(projectDir, name));
+}
+
+function listProjectJsonlFiles(problemCwd: string, claudeHome: string): string[] {
+  const candidates = [
+    problemCwd,
+    path.dirname(problemCwd),
+  ];
+  const files = new Set<string>();
+  for (const cwd of candidates) {
+    for (const file of listJsonlFilesForCwd(cwd, claudeHome)) {
+      files.add(file);
+    }
+  }
+  return [...files];
 }
 
 /**
@@ -192,10 +229,8 @@ export async function loadHistoryFromClaudeCode(
   createdAtMs: number,
   claudeHome: string = DEFAULT_CLAUDE_HOME,
 ): Promise<StoredMessage[]> {
-  // project 根 = problem.cwd 的父目录
-  const projectCwd = path.dirname(problemCwd);
   const slug = basenameSlug(problemCwd);
-  const files = listProjectJsonlFiles(projectCwd, claudeHome);
+  const files = listProjectJsonlFiles(problemCwd, claudeHome);
   if (files.length === 0) return [];
 
   const all: StoredMessage[] = [];
@@ -206,7 +241,7 @@ export async function loadHistoryFromClaudeCode(
     } catch {
       continue;
     }
-    const msgs = parseJsonlToMessages(content, problemId, createdAtMs, slug);
+    const msgs = parseJsonlToMessages(content, problemId, createdAtMs, slug, problemCwd);
     all.push(...msgs);
   }
 
