@@ -1,4 +1,4 @@
-import { BrowserRouter as Router, Route, Routes } from 'react-router-dom';
+import { BrowserRouter as Router, Route, Routes, Navigate } from 'react-router-dom';
 import { I18nextProvider } from 'react-i18next';
 
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -117,7 +117,7 @@ export default function App() {
                 <ProtectedRoute>
                   <Router basename={routerBasename}>
                     <Routes>
-                      <Route path="/" element={<AppContent />} />
+                      <Route path="/" element={<Navigate to="/onsite" replace />} />
                       <Route path="/session/:sessionId" element={<AppContent />} />
                       <Route path="/onsite" element={<OnsiteLayout />} />
                       <Route path="/onsite/:problemId" element={<OnsiteLayout />} />
