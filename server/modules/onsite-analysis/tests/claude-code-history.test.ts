@@ -111,6 +111,140 @@ test('parseJsonlToMessages assistant content 是字符串(罕见) → 不产出'
   assert.equal(out.length, 0);
 });
 
+test('parseJsonlToMessages assistant tool_use(AskUserQuestion)→ role=assistant kind=tool_use', () => {
+  const jsonl = JSON.stringify({
+    type: 'assistant',
+    timestamp: '2026-07-07T06:18:34Z',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '我先确认信息完整度' },
+        {
+          type: 'tool_use',
+          name: 'AskUserQuestion',
+          input: {
+            questions: [{
+              header: '口径范围',
+              question: '「登录」口径要怎么定？',
+              options: [
+                { label: '仅对外', description: '仅 sdk-server 对外暴露' },
+                { label: '含对内', description: '包括内部调用' },
+              ],
+              multiSelect: false,
+            }],
+          },
+        },
+      ],
+    },
+  });
+  const out = parseJsonlToMessages(jsonl, 'p1', 0, '');
+  assert.equal(out.length, 2);
+  assert.equal(out[0]?.kind, 'text');
+  assert.equal(out[0]?.content, '我先确认信息完整度');
+  assert.equal(out[1]?.kind, 'tool_use');
+  assert.ok(out[1]?.content.includes('AskUserQuestion'));
+  assert.ok(out[1]?.content.includes('口径范围'));
+  assert.ok(out[1]?.content.includes('仅对外'));
+});
+
+test('parseJsonlToMessages user tool_result → role=user kind=tool_result', () => {
+  const jsonl = JSON.stringify({
+    type: 'user',
+    timestamp: '2026-07-07T06:18:40Z',
+    message: {
+      role: 'user',
+      content: [
+        { type: 'tool_result', tool_use_id: 'toolu_01', content: '仅对外' },
+      ],
+    },
+  });
+  const out = parseJsonlToMessages(jsonl, 'p1', 0, '');
+  assert.equal(out.length, 1);
+  assert.equal(out[0]?.role, 'user');
+  assert.equal(out[0]?.kind, 'tool_result');
+  assert.equal(out[0]?.content, '仅对外');
+});
+
+test('parseJsonlToMessages 完整 user + assistant text + AskUserQuestion + tool_result 往返', () => {
+  const jsonl = [
+    JSON.stringify({
+      type: 'user',
+      timestamp: '2026-07-07T06:18:16Z',
+      message: { role: 'user', content: '客户:不涉及三方对接\n问题描述:登录有几个接口\n\n请排查' },
+    }),
+    JSON.stringify({
+      type: 'assistant',
+      timestamp: '2026-07-07T06:18:34Z',
+      message: {
+        role: 'assistant',
+        content: [
+          { type: 'text', text: '我先确认信息,再排查。' },
+          {
+            type: 'tool_use',
+            name: 'AskUserQuestion',
+            input: {
+              questions: [{
+                header: '口径',
+                question: '「登录」口径怎么定？',
+                options: [{ label: '仅对外' }, { label: '含对内' }],
+              }],
+            },
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: 'user',
+      timestamp: '2026-07-07T06:18:40Z',
+      message: {
+        role: 'user',
+        content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: '仅对外' }],
+      },
+    }),
+  ].join('\n');
+
+  const out = parseJsonlToMessages(jsonl, 'p-rtt', 0, '');
+  assert.equal(out.length, 4);
+  assert.equal(out[0]?.role, 'user');
+  assert.equal(out[0]?.kind, 'text');
+  assert.ok(out[0]?.content.includes('不涉及三方对接'));
+
+  assert.equal(out[1]?.role, 'assistant');
+  assert.equal(out[1]?.kind, 'text');
+  assert.ok(out[1]?.content.includes('我先确认'));
+
+  assert.equal(out[2]?.role, 'assistant');
+  assert.equal(out[2]?.kind, 'tool_use');
+  assert.ok(out[2]?.content.includes('AskUserQuestion'));
+
+  assert.equal(out[3]?.role, 'user');
+  assert.equal(out[3]?.kind, 'tool_result');
+  assert.equal(out[3]?.content, '仅对外');
+});
+
+test('parseJsonlToMessages assistant tool_use 非 AskUserQuestion 也提取', () => {
+  const jsonl = JSON.stringify({
+    type: 'assistant',
+    timestamp: '2026-07-07T06:18:34Z',
+    message: {
+      role: 'assistant',
+      content: [
+        { type: 'text', text: '让我查一下' },
+        {
+          type: 'tool_use',
+          name: 'Bash',
+          input: { command: 'ls -la', description: '列出文件' },
+        },
+      ],
+    },
+  });
+  const out = parseJsonlToMessages(jsonl, 'p1', 0, '');
+  assert.equal(out.length, 2);
+  assert.equal(out[1]?.kind, 'tool_use');
+  assert.ok(out[1]?.content.includes('Bash'));
+  assert.ok(out[1]?.content.includes('ls -la'));
+});
+
 test('parseJsonlToMessages user 空字符串 content → 不产出', () => {
   const jsonl = JSON.stringify({
     type: 'user',

@@ -39,7 +39,7 @@ import {
   problemService,
   sanitizeCustomerLabel,
 } from './problem.service.js';
-import { messagesStore } from './messages-store.service.js';
+import { messagesStore, type StoredMessage } from './messages-store.service.js';
 import { loadHistoryFromClaudeCode } from './claude-code-history.service.js';
 import {
   InvalidStateTransitionError,
@@ -547,11 +547,14 @@ router.get('/problems/:id/files', async (req, res) => {
 // ---------------------------------------------------------------------------
 //
 // 返回该 problem 的 chat 消息,合并两个数据源(都按 ts 正序):
-//  1. server 端 messagesStore(纯内存,捕获经 OnsiteChatStream UI 走的 ws)
-//  2. Claude Code CLI 磁盘 JSONL(若内存为空,回退到 ~/.claude/projects/...
-//     扫描,过滤 timestamp >= problem.created_at)
+//  1. Claude Code CLI 磁盘 JSONL(主数据源,完整历史)
+//  2. server 端 messagesStore(纯内存,补充磁盘尚未落盘的最新消息)
 // 写入路径在 onsite-websocket.service.ts:attachHelloContext 包 ws.send。
 // 401 由 mount 点 authenticateToken 处理。
+//
+// 重要:磁盘永远是主数据源。messagesStore 只捕获 server→client 的外发消息
+// (assistant text / tool_use / tool_result),不包含用户消息。若 messagesStore
+// 非空就跳过磁盘,用户消息和 tool_use(AskUserQuestion 等)会全部丢失。
 
 router.get('/problems/:id/messages', async (req, res) => {
   const id = req.params.id;
@@ -561,18 +564,25 @@ router.get('/problems/:id/messages', async (req, res) => {
     if (!problem) {
       return res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
     }
-    let messages = messagesStore.getByProblemId(id);
-    if (messages.length === 0) {
-      // 内存为空 → 回退到磁盘 JSONL(用户在 Claude Code CLI 跑过的历史)
-      const createdAtMs = problem.created_at ? Date.parse(problem.created_at) : 0;
-      try {
-        const disk = await loadHistoryFromClaudeCode(id, problem.cwd, createdAtMs);
-        messages = disk;
-      } catch {
-        // 读盘失败不要 500 — 返回空数组,前端显示空
-        messages = [];
-      }
+    const createdAtMs = problem.created_at ? Date.parse(problem.created_at) : 0;
+
+    // 磁盘 JSONL 是主数据源(含用户消息 + assistant text + tool_use)
+    let disk: StoredMessage[] = [];
+    try {
+      disk = await loadHistoryFromClaudeCode(id, problem.cwd, createdAtMs);
+    } catch {
+      // 读盘失败 → 回退到内存(不一定有数据,聊胜于无)
+      disk = [];
     }
+
+    // 内存 messagesStore 作为补充:只取比磁盘最新消息更新的(尚未落盘的部分)
+    const memMessages = messagesStore.getByProblemId(id);
+    const latestDiskTs = disk.length > 0 ? disk[disk.length - 1].ts : 0;
+    const freshMem = memMessages.filter((m) => m.ts > latestDiskTs);
+
+    // 合并并按 ts 升序
+    const messages = [...disk, ...freshMem].sort((a, b) => a.ts - b.ts);
+
     res.json({ problem_id: id, messages });
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'list messages failed';

@@ -95,6 +95,94 @@ function assistantTextBlocks(line: RawJsonlLine): string[] {
   return out;
 }
 
+/**
+ * 从 assistant 消息的 content 数组中提取 tool_use 块,格式化为可读文本。
+ * 与 assistantTextBlocks 互补:后者只取 text 块,本函数取 tool_use。
+ *
+ * 返回 { name, content } 数组,name 为工具名(如 AskUserQuestion),
+ * content 为格式化后的工具输入文本(供 UI 渲染)。
+ */
+function assistantToolUseBlocks(line: RawJsonlLine): Array<{ name: string; content: string }> {
+  if (line.type !== 'assistant') return [];
+  const c = line.message?.content;
+  if (!Array.isArray(c)) return [];
+  const out: Array<{ name: string; content: string }> = [];
+  for (const block of c) {
+    if (!block || typeof block !== 'object') continue;
+    if ((block as { type?: string }).type !== 'tool_use') continue;
+    const b = block as { name?: unknown; input?: unknown };
+    const name = typeof b.name === 'string' ? b.name : 'Tool';
+    const input = b.input != null ? formatToolInputForDisplay(name, b.input) : '';
+    out.push({ name, content: input });
+  }
+  return out;
+}
+
+/**
+ * 从 user 消息的 content 数组中提取 tool_result 块。
+ * 返回与对应 tool_use 匹配的 tool_result 文本数组。
+ */
+function userToolResultBlocks(line: RawJsonlLine): string[] {
+  if (line.type !== 'user') return [];
+  const c = line.message?.content;
+  if (!Array.isArray(c)) return [];
+  const out: string[] = [];
+  for (const block of c) {
+    if (!block || typeof block !== 'object') continue;
+    if ((block as { type?: string }).type !== 'tool_result') continue;
+    const b = block as { content?: unknown; is_error?: unknown };
+    const text = typeof b.content === 'string'
+      ? b.content
+      : Array.isArray(b.content)
+        ? b.content.map((p: unknown) => (p && typeof p === 'object' ? (p as { text?: string }).text || '' : '')).join('\n')
+        : b.content != null ? String(b.content) : '';
+    if (text.trim()) {
+      out.push(b.is_error ? `❌ ${text}` : text);
+    }
+  }
+  return out;
+}
+
+/**
+ * 将 tool_use 的 input 格式化为人类可读的文本。
+ *
+ * AskUserQuestion 特殊处理:把问题、选项渲染为结构化文本,便于
+ * onsite 聊天 UI 直接展示(无需交互式 AskUserQuestionPanel)。
+ */
+function formatToolInputForDisplay(toolName: string, input: unknown): string {
+  if (toolName === 'AskUserQuestion' && input && typeof input === 'object') {
+    const inp = input as Record<string, unknown>;
+    const questions = Array.isArray(inp.questions) ? inp.questions : [];
+    const lines: string[] = [];
+    for (const q of questions) {
+      if (!q || typeof q !== 'object') continue;
+      const qObj = q as Record<string, unknown>;
+      const header = typeof qObj.header === 'string' ? qObj.header : '';
+      const question = typeof qObj.question === 'string' ? qObj.question : '';
+      const options = Array.isArray(qObj.options) ? qObj.options as Array<Record<string, unknown>> : [];
+      if (header) lines.push(`【${header}】${question}`);
+      else if (question) lines.push(question);
+      if (options.length > 0) {
+        lines.push('选项:');
+        for (let i = 0; i < options.length; i++) {
+          const opt = options[i];
+          const label = typeof opt?.label === 'string' ? opt.label : '';
+          const desc = typeof opt?.description === 'string' ? opt.description : '';
+          lines.push(desc ? `  ${i + 1}. ${label} — ${desc}` : `  ${i + 1}. ${label}`);
+        }
+      }
+      if (qObj.multiSelect) lines.push('(可多选)');
+    }
+    return lines.join('\n') || JSON.stringify(input, null, 2);
+  }
+  // 其他工具:简洁 JSON 展示
+  try {
+    return JSON.stringify(input, null, 2);
+  } catch {
+    return String(input);
+  }
+}
+
 function lineTimestamp(line: RawJsonlLine): number {
   if (typeof line.timestamp !== 'string') return 0;
   const t = Date.parse(line.timestamp);
@@ -168,6 +256,16 @@ export function parseJsonlToMessages(
           ts,
         });
       }
+      // 提取 user 消息中的 tool_result 块(如 AskUserQuestion 的回复)
+      for (const resultText of userToolResultBlocks(line)) {
+        out.push({
+          problemId,
+          role: 'user',
+          kind: 'tool_result',
+          content: resultText,
+          ts,
+        });
+      }
     } else if (line.type === 'assistant') {
       for (const text of assistantTextBlocks(line)) {
         out.push({
@@ -175,6 +273,16 @@ export function parseJsonlToMessages(
           role: 'assistant',
           kind: 'text',
           content: text,
+          ts,
+        });
+      }
+      // 提取 assistant 消息中的 tool_use 块(如 AskUserQuestion 提问)
+      for (const tool of assistantToolUseBlocks(line)) {
+        out.push({
+          problemId,
+          role: 'assistant',
+          kind: 'tool_use',
+          content: `${tool.name}\n${tool.content}`,
           ts,
         });
       }
