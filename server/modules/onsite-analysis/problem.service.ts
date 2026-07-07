@@ -134,7 +134,7 @@ function deriveStatusFromProblemJson(json: unknown): string {
     const status = (json as { status?: unknown }).status;
     if (typeof status === 'string' && status.length > 0) return status;
   }
-  return 'pending_info';
+  return 'analyzing';
 }
 
 /**
@@ -188,7 +188,7 @@ export const problemService = {
       third_bridge_branch: input.third_bridge_branch,
       iteration: input.iteration,
       database: storedDatabase as string | null as string, // legacy: column is non-null; DB layer accepts null
-      status: 'pending_info',
+      status: 'analyzing',
       cwd: dirPath,
       problem_json_path: problemJsonPath,
       description: storedDescription,
@@ -242,7 +242,7 @@ export const problemService = {
 
       const dirPath = path.join(root, entry.name);
       const jsonPath = path.join(dirPath, 'problem.json');
-      let status = 'pending_info';
+      let status = 'analyzing';
       let customer = extractCustomer(entry.name);
       let iteration: string | null = null;
       let database: string | null = null;

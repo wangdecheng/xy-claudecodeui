@@ -39,7 +39,6 @@ import CwdLockView from './CwdLockView';
 import DisciplineCounter from './DisciplineCounter';
 import { initialOnsiteRunState, reduceOnsiteRunState } from './onsiteRunState';
 import { sqlTemplateFor } from './sqlTemplates';
-import StatusBadge from './StatusBadge';
 
 // ─── Stream message model ────────────────────────────────────────────────
 
@@ -555,7 +554,6 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
               · {problem.description}
             </span>
           )}
-          <StatusBadge status={problem.status} />
           <div className="ml-auto flex items-center gap-2">
             <CwdLockView cwd={problem.cwd} />
             <span

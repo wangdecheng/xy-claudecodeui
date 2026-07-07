@@ -2,7 +2,7 @@
  * IssueListItem — one row in the issue-list sidebar.
  *
  * Renders:
- *  - customer name + <StatusBadge />
+ *  - customer name
  *  - cwd directory short-name (last segment, e.g. "20260704-山西公安")
  *  - iteration + database chips
  *  - relative time (parsed from cwd's leading date or created_at fallback)
@@ -17,7 +17,6 @@ import type { ProblemListItem } from '@shared/onsite-types';
 
 import { cn } from '../../lib/utils';
 import { useOnsiteStore } from '../../stores/onsiteStore';
-import StatusBadge from './StatusBadge';
 
 export interface IssueListItemProps {
   problem: ProblemListItem;
@@ -85,7 +84,6 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
         <span className="truncate text-sm font-medium text-foreground" title={problem.customer}>
           {problem.customer}
         </span>
-        <StatusBadge status={problem.status} />
       </div>
       <div className="mt-1 truncate text-xs text-muted-foreground" title={problem.cwd}>
         📁 {shortName}
@@ -93,16 +91,7 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
       <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <div className="flex flex-wrap gap-1">
           <span className="rounded bg-muted px-1.5 py-0.5">{problem.iteration}</span>
-          {problem.status === 'pending_info' && !problem.database ? (
-            <span
-              data-testid="onsite-issue-missing-chip"
-              className="rounded border border-amber-400/50 bg-amber-100/60 px-1.5 py-0.5 text-amber-800 dark:border-amber-600/50 dark:bg-amber-900/20 dark:text-amber-200"
-            >
-              缺：数据库类型
-            </span>
-          ) : (
-            problem.database && <span className="rounded bg-muted px-1.5 py-0.5">{problem.database}</span>
-          )}
+          {problem.database && <span className="rounded bg-muted px-1.5 py-0.5">{problem.database}</span>}
           {problem.third_bridge_branch && (
             <span className="rounded bg-muted px-1.5 py-0.5">{problem.third_bridge_branch}</span>
           )}
