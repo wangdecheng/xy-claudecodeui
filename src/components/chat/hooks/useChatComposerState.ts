@@ -212,6 +212,9 @@ export function useChatComposerState({
   const inputValueRef = useRef(input);
   const selectedProjectId = selectedProject?.projectId;
 
+  // 当用户在处理中按 Enter 发送消息时，先触发 abort，待 isLoading 变为 false 后自动补发
+  const pendingSendAfterAbortRef = useRef(false);
+
   const handleBuiltInCommand = useCallback(
     (result: CommandExecutionResult) => {
       const { action, data } = result;
@@ -545,13 +548,43 @@ export function useChatComposerState({
     noKeyboard: true,
   });
 
+  const handleAbortSession = useCallback(() => {
+    if (!canAbortSession) {
+      return;
+    }
+
+    const targetSessionId = selectedSession?.id || currentSessionId || null;
+    if (!targetSessionId) {
+      console.warn('Abort requested but no session ID is available.');
+      return;
+    }
+
+    // The backend resolves the provider from the session row, so no provider
+    // field is needed here.
+    sendMessage({
+      type: 'chat.abort',
+      sessionId: targetSessionId,
+    });
+  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
+
   const handleSubmit = useCallback(
     async (
       event: FormEvent<HTMLFormElement> | MouseEvent | TouchEvent | KeyboardEvent<HTMLTextAreaElement>,
     ) => {
       event.preventDefault();
       const currentInput = inputValueRef.current;
-      if (!currentInput.trim() || isLoading || !selectedProject) {
+      if (!currentInput.trim() || !selectedProject) {
+        return;
+      }
+
+      // 当前有正在处理的请求：先中止再自动补发，避免静默丢弃用户输入
+      if (isLoading) {
+        if (canAbortSession) {
+          pendingSendAfterAbortRef.current = true;
+          handleAbortSession();
+          return;
+        }
+        // 无法中止（canInterrupt=false）：忽略本次提交，保留输入让用户稍后重试
         return;
       }
 
@@ -775,6 +808,8 @@ export function useChatComposerState({
       geminiModel,
       opencodeModel,
       isLoading,
+      canAbortSession,
+      handleAbortSession,
       onSessionProcessing,
       onSessionEstablished,
       permissionMode,
@@ -792,6 +827,18 @@ export function useChatComposerState({
   useEffect(() => {
     handleSubmitRef.current = handleSubmit;
   }, [handleSubmit]);
+
+  // 当 isLoading 从 true → false（abort 完成）时，自动补发用户之前按 Enter 提交的消息
+  useEffect(() => {
+    if (!isLoading && pendingSendAfterAbortRef.current) {
+      pendingSendAfterAbortRef.current = false;
+      // 延迟一帧确保 state 已更新
+      const raf = requestAnimationFrame(() => {
+        handleSubmitRef.current?.(createFakeSubmitEvent());
+      });
+      return () => cancelAnimationFrame(raf);
+    }
+  }, [isLoading]);
 
   // A voice transcript either fills the input (to edit before sending) or, when the
   // user tapped "stop and send", is submitted straight away. Mirror the value into
@@ -940,25 +987,6 @@ export function useChatComposerState({
     }
     setIsTextareaExpanded(false);
   }, [resetCommandMenuState]);
-
-  const handleAbortSession = useCallback(() => {
-    if (!canAbortSession) {
-      return;
-    }
-
-    const targetSessionId = selectedSession?.id || currentSessionId || null;
-    if (!targetSessionId) {
-      console.warn('Abort requested but no session ID is available.');
-      return;
-    }
-
-    // The backend resolves the provider from the session row, so no provider
-    // field is needed here.
-    sendMessage({
-      type: 'chat.abort',
-      sessionId: targetSessionId,
-    });
-  }, [canAbortSession, currentSessionId, selectedSession?.id, sendMessage]);
 
   const handleGrantToolPermission = useCallback(
     (suggestion: { entry: string; toolName: string }) => {
