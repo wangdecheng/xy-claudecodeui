@@ -29,6 +29,8 @@ import type { OnsiteChatFrame, ProblemRecord } from '@shared/onsite-types';
 import { cn } from '../../lib/utils';
 import { useOnsiteWebSocket } from '../../contexts/OnsiteWebSocketContext';
 import { useOnsiteStore } from '../../stores/onsiteStore';
+import type { PendingPermissionRequest } from '../chat/types/types';
+import { AskUserQuestionPanel } from '../chat/tools/components/InteractiveRenderers';
 
 import AnalysisFilesRow from './AnalysisFilesRow';
 import AnalysisInfoChips from './AnalysisInfoChips';
@@ -58,7 +60,10 @@ interface DisciplineState {
   log: DisciplineLogEntry[];
 }
 
-const ALLOWED_KINDS = new Set(['text', 'tool_use', 'tool_result', 'thinking', 'stream_delta', 'complete']);
+// stream_end: 内容块边界(flush 累积的 stream_delta)；error: SDK 运行期错误；
+// permission_request / permission_cancelled: 交互式工具(AskUserQuestion)
+// thinking: 当前无渲染目标(silently dropped)，但仍在集合中避免消费
+const ALLOWED_KINDS = new Set(['text', 'tool_use', 'tool_result', 'thinking', 'stream_delta', 'stream_end', 'complete', 'error', 'permission_request', 'permission_cancelled']);
 
 function makeId(): string {
   return `m-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -94,6 +99,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     writeOriginalLog: 0,
     log: [],
   });
+  const [pendingPermissions, setPendingPermissions] = useState<PendingPermissionRequest[]>([]);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -177,6 +183,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     setDiscipline({ softening: 0, writeOriginalLog: 0, log: [] });
     setDraft('');
     setRunState(initialOnsiteRunState);
+    setPendingPermissions([]);
     // 重置流累积状态,防止上一个 problem 的 stream_delta 残余泄漏
     if (streamTimerRef.current) {
       clearTimeout(streamTimerRef.current);
@@ -204,6 +211,36 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
       if (ev.kind === 'protocol_error') {
         setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
+        return;
+      }
+
+      // ── permission_request / permission_cancelled ──────────────────
+      // AskUserQuestion 等交互式工具需要用户响应;复用 chat 路径的
+      // AskUserQuestionPanel,通过 pendingPermissions 状态驱动渲染。
+      if (ev.kind === 'permission_request') {
+        const requestId = (ev as Record<string, unknown>).requestId as string | undefined;
+        if (!requestId) return;
+        const toolName = ((ev as Record<string, unknown>).toolName as string) || 'UnknownTool';
+        // 只处理 AskUserQuestion(ExitPlanMode 当前在 onsite 场景不触发)
+        if (toolName !== 'AskUserQuestion') return;
+        setPendingPermissions((cur) => {
+          if (cur.some((r) => r.requestId === requestId)) return cur;
+          return [...cur, {
+            requestId,
+            toolName,
+            input: (ev as Record<string, unknown>).input,
+            sessionId: sessionIdRef.current,
+            receivedAt: new Date(),
+          }];
+        });
+        return;
+      }
+
+      if (ev.kind === 'permission_cancelled') {
+        const requestId = (ev as Record<string, unknown>).requestId as string | undefined;
+        if (requestId) {
+          setPendingPermissions((cur) => cur.filter((r) => r.requestId !== requestId));
+        }
         return;
       }
 
@@ -289,6 +326,19 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             ts,
           },
         ]);
+      } else if (ev.kind === 'error') {
+        // SDK 运行期错误:作为红色 error 气泡渲染,让操作者知道出错了
+        setMessages((cur) => [
+          ...cur,
+          {
+            id: makeId(),
+            role: 'assistant',
+            kind: 'text' as const,
+            text: `⚠️ ${content || '未知错误'}`,
+            ts,
+          },
+        ]);
+        setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
       } else if (ev.kind === 'stream_delta' && content) {
         // 实时流文本累积: Claude SDK 不发完整 assistant text,而是连续
         // stream_delta 推送文本片段。用 ref 累积 + 100ms 定时器批量
@@ -431,6 +481,25 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     send({ type: 'chat.abort', sessionId: sessionIdRef.current });
   };
 
+  // 交互式工具(AskUserQuestion)的权限决策回调,复用 chat 路径的
+  // chat.permission-response 协议。
+  const handlePermissionDecision = useCallback(
+    (requestIds: string | string[], decision: { allow?: boolean; message?: string; updatedInput?: unknown }) => {
+      const ids = Array.isArray(requestIds) ? requestIds : [requestIds];
+      setPendingPermissions((cur) => cur.filter((r) => !ids.includes(r.requestId)));
+      for (const requestId of ids) {
+        send({
+          type: 'chat.permission-response',
+          requestId,
+          allow: decision.allow ?? true,
+          updatedInput: decision.updatedInput,
+          message: decision.message,
+        });
+      }
+    },
+    [send],
+  );
+
   // Insert text into the composer draft and focus it (used by SQL template
   // button and card "补日志重跑" action).
   const insertIntoDraft = (text: string) => {
@@ -522,6 +591,23 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       </div>
 
       <footer className="flex shrink-0 flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
+        {/* 交互式工具面板——AskUserQuestion 等权限请求在此渲染 */}
+        {pendingPermissions.length > 0 && (
+          <div className="mb-2 space-y-2">
+            {pendingPermissions.map((req) => {
+              if (req.toolName === 'AskUserQuestion') {
+                return (
+                  <AskUserQuestionPanel
+                    key={req.requestId}
+                    request={req}
+                    onDecision={handlePermissionDecision}
+                  />
+                );
+              }
+              return null;
+            })}
+          </div>
+        )}
         <input
           ref={fileInputRef}
           type="file"
