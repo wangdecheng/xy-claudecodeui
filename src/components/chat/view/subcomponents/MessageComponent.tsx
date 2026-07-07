@@ -11,7 +11,7 @@ import type {
 import { formatUsageLimitText } from '../../utils/chatFormatting';
 import type { Project } from '../../../../types/app';
 import { ToolRenderer, shouldHideToolResult } from '../../tools';
-import { Reasoning, ReasoningTrigger, ReasoningContent } from '../../../../shared/view/ui';
+import { Reasoning, ReasoningTrigger, ReasoningContent, Collapsible, CollapsibleTrigger, CollapsibleContent } from '../../../../shared/view/ui';
 
 import { Markdown } from './Markdown';
 import MessageCopyControl from './MessageCopyControl';
@@ -210,18 +210,31 @@ const MessageComponent = memo(({ message, prevMessage, createDiff, onFileOpen, s
                       </div>
                     </div>
                   ) : (
-                    // Non-error results - route through ToolRenderer (single source of truth)
+                    // Non-error results — collapsible, default collapsed.
+                    // Users care about the AI's reply, not tool internals.
                     <div id={`tool-result-${message.toolId}`} className="scroll-mt-4">
-                      <ToolRenderer
-                        toolName={message.toolName || 'UnknownTool'}
-                        toolInput={message.toolInput}
-                        toolResult={message.toolResult}
-                        toolId={message.toolId}
-                        mode="result"
-                        onFileOpen={onFileOpen}
-                        createDiff={createDiff}
-                        selectedProject={selectedProject}
-                      />
+                      <Collapsible defaultOpen={false}>
+                        <CollapsibleTrigger className="flex items-center gap-1.5 text-[11px] text-muted-foreground/60 transition-colors hover:text-muted-foreground">
+                          <svg className="h-3 w-3 flex-shrink-0 transition-transform duration-150 data-[state=open]:rotate-90" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                          <span>查看结果</span>
+                        </CollapsibleTrigger>
+                        <CollapsibleContent>
+                          <div className="mt-1.5">
+                            <ToolRenderer
+                              toolName={message.toolName || 'UnknownTool'}
+                              toolInput={message.toolInput}
+                              toolResult={message.toolResult}
+                              toolId={message.toolId}
+                              mode="result"
+                              onFileOpen={onFileOpen}
+                              createDiff={createDiff}
+                              selectedProject={selectedProject}
+                            />
+                          </div>
+                        </CollapsibleContent>
+                      </Collapsible>
                     </div>
                   )
                 )}

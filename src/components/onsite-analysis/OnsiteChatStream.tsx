@@ -690,12 +690,43 @@ function MessageBubble({
   const isUser = message.kind === 'text' && message.role === 'user';
   const isAssistant = message.kind === 'text' && message.role === 'assistant';
   const isTool = message.kind === 'tool_use' || message.kind === 'tool_result';
+  const [toolExpanded, setToolExpanded] = useState(false);
 
   const baseCls = useMemo(() => {
     if (isUser) return 'ml-auto max-w-[80%] rounded-2xl bg-blue-500 px-3 py-2 text-sm text-white shadow-sm';
     if (isAssistant) return 'mr-auto max-w-[80%] whitespace-pre-wrap rounded-2xl bg-card border border-border px-3 py-2 text-sm text-foreground shadow-sm';
     return 'ml-6 mr-6 rounded-md bg-muted/50 px-2 py-1 font-mono text-[11px] text-muted-foreground';
   }, [isUser, isAssistant]);
+
+  // 工具消息的简短摘要
+  const toolName = isTool ? (message as typeof message & { name?: string }).name : undefined;
+  const toolSummary = useMemo(() => {
+    if (!isTool || !toolName) return null;
+    try {
+      const input = JSON.parse(message.text);
+      switch (toolName) {
+        case 'Bash':
+          return input.command ? `$ ${input.command}` : null;
+        case 'Read':
+        case 'Write':
+        case 'Edit':
+        case 'ApplyPatch':
+          return input.file_path?.split('/').pop() || input.file_path || null;
+        case 'Grep':
+        case 'Glob':
+          return input.pattern || null;
+        case 'Task':
+          return input.description || input.subagent_type || null;
+        case 'WebFetch':
+        case 'WebSearch':
+          return input.url || input.query || null;
+        default:
+          return null;
+      }
+    } catch {
+      return null;
+    }
+  }, [isTool, toolName, message.text]);
 
   // msg-role 行(REQ-4.6):用户「现场反馈」/AI「Claude · 取证顺序:日志 → 源码 → DB」
   const { t } = useTranslation(['onsite']);
@@ -741,6 +772,43 @@ function MessageBubble({
         {isAssistant ? (
           <div className={baseCls}>
             <CardRenderer text={message.text} {...(onRerun ? { onRerun } : {})} />
+          </div>
+        ) : isTool ? (
+          /* 工具消息:默认折叠，显示工具名+摘要，点击展开 */
+          <div className={baseCls}>
+            <button
+              type="button"
+              onClick={() => setToolExpanded((v) => !v)}
+              className="flex w-full items-center gap-1 text-left"
+            >
+              <svg
+                className={cn(
+                  'h-3 w-3 flex-shrink-0 transition-transform',
+                  toolExpanded && 'rotate-90',
+                )}
+                fill="none" stroke="currentColor" viewBox="0 0 24 24"
+              >
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+              </svg>
+              <span className="font-medium">{message.kind === 'tool_use' ? '🔧' : '📋'}</span>
+              {toolName && <span className="font-medium">{toolName}</span>}
+              {toolSummary && (
+                <>
+                  <span className="text-muted-foreground/40">/</span>
+                  <span className="truncate">{toolSummary}</span>
+                </>
+              )}
+              {!toolExpanded && (
+                <span className="ml-auto flex-shrink-0 text-[10px] text-muted-foreground/50">
+                  {message.kind === 'tool_result' ? '结果' : '详情'}
+                </span>
+              )}
+            </button>
+            {toolExpanded && (
+              <pre className="mt-1 line-clamp-6 overflow-hidden whitespace-pre-wrap break-all border-t border-border/40 pt-1 text-[11px]">
+                {message.text}
+              </pre>
+            )}
           </div>
         ) : (
           <div className={baseCls}>{message.text}</div>

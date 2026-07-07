@@ -4,6 +4,7 @@ import * as React from 'react';
 import { BrainIcon, ChevronDownIcon } from 'lucide-react';
 
 import { cn } from '../../../lib/utils';
+
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from './Collapsible';
 import { Shimmer } from './Shimmer';
 
@@ -191,7 +192,9 @@ export const ReasoningContent = React.memo<ReasoningContentProps>(
       className={cn('mt-4 text-sm text-muted-foreground', className)}
       {...props}
     >
-      {children}
+      <div className="line-clamp-6">
+        {children}
+      </div>
     </CollapsibleContent>
   )
 );

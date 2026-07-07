@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 
 type DiffLine = {
   type: string;
@@ -16,8 +16,11 @@ interface ToolDiffViewerProps {
   badgeColor?: 'gray' | 'green';
 }
 
+const DIFF_PREVIEW_LINES = 10;
+const DIFF_TRUNCATE_THRESHOLD = 20;
+
 /**
- * Compact diff viewer — VS Code-style
+ * Compact diff viewer — VS Code-style, with truncation for large diffs.
  */
 export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
   oldContent,
@@ -28,6 +31,7 @@ export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
   badge = 'Diff',
   badgeColor = 'gray'
 }) => {
+  const [expanded, setExpanded] = useState(false);
   const badgeClasses = badgeColor === 'green'
     ? 'bg-green-100 dark:bg-green-900/30 text-green-600 dark:text-green-400'
     : 'bg-gray-100 dark:bg-gray-800 text-gray-500 dark:text-gray-400';
@@ -41,6 +45,11 @@ export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
     },
     [createDiff, oldContent, newContent]
   );
+
+  const needsTruncation = diffLines.length > DIFF_TRUNCATE_THRESHOLD;
+  const visibleLines = needsTruncation && !expanded
+    ? diffLines.slice(0, DIFF_PREVIEW_LINES)
+    : diffLines;
 
   return (
     <div className="overflow-hidden rounded border border-gray-200/60 dark:border-gray-700/50">
@@ -65,7 +74,7 @@ export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
 
       {/* Diff lines */}
       <div className="font-mono text-[11px] leading-[18px]">
-        {diffLines.map((diffLine, i) => (
+        {visibleLines.map((diffLine, i) => (
           <div key={i} className="flex">
             <span
               className={`w-6 flex-shrink-0 select-none text-center ${
@@ -88,6 +97,15 @@ export const ToolDiffViewer: React.FC<ToolDiffViewerProps> = ({
           </div>
         ))}
       </div>
+
+      {needsTruncation && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="w-full border-t border-gray-200/60 py-1 text-center text-[11px] text-muted-foreground transition-colors hover:bg-muted/50 hover:text-foreground dark:border-gray-700/50"
+        >
+          {expanded ? `▲ 收起` : `▼ 展开全部 (${diffLines.length} 行)`}
+        </button>
+      )}
     </div>
   );
 };
