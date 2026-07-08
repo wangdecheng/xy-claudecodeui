@@ -1196,6 +1196,13 @@ app.get('/api/projects/:projectId/sessions/:sessionId/token-usage', authenticate
             return res.status(404).json({ error: 'Session not found', sessionId: safeSessionId });
         }
 
+        // 多用户隔离：检查会话归属
+        const ownerId = sessionsDb.getSessionUserId(safeSessionId);
+        const reqUserId = req.user?.id ?? req.user?.userId;
+        if (ownerId != null && reqUserId != null && ownerId !== Number(reqUserId)) {
+            return res.status(403).json({ error: 'You do not own this session.' });
+        }
+
         const provider = sessionRow.provider || 'claude';
         const providerNativeSessionId = sessionRow?.provider_session_id || safeSessionId;
 

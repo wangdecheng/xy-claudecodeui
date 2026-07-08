@@ -512,6 +512,9 @@ export const runMigrations = (db: Database) => {
     db.exec(ONSITE_STATE_AUDIT_TABLE_SCHEMA_SQL);
     db.exec(ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL);
 
+    // 多用户隔离：给 sessions 表添加 user_id 列
+    addSessionsUserIdColumn(db);
+
     // Batch 5 (Sub-task E) cleanup — add root_cause_text to existing
     // onsite_problems tables (those created before this column existed).
     // Idempotent: PRAGMA table_info skip when already present.
@@ -562,6 +565,20 @@ export const runMigrations = (db: Database) => {
  * drift here would mean a false-ok on every edit. The application-layer
  * `assertSessionKind` guard (sessionsDb) is the real safety net for upgrades.
  */
+/**
+ * 多用户隔离：给已有 sessions 表添加 user_id 列。
+ * 幂等：通过 PRAGMA table_info 检测，已存在则跳过。
+ * 旧数据的 user_id 保持 NULL（公开可见，向后兼容）。
+ */
+const addSessionsUserIdColumn = (db: Database): void => {
+  const info = getTableInfo(db, 'sessions');
+  if (!info.length) {
+    return;
+  }
+  const columnNames = info.map((c) => c.name);
+  addColumnToTableIfNotExists(db, 'sessions', columnNames, 'user_id', 'INTEGER');
+};
+
 const addSessionsKindAndOnsiteColumns = (db: Database): void => {
   const info = getTableInfo(db, 'sessions');
   if (!info.length) {

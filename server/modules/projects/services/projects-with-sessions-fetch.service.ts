@@ -51,6 +51,7 @@ type GetProjectsWithSessionsOptions = {
   skipSynchronization?: boolean;
   sessionsLimit?: number;
   sessionsOffset?: number;
+  userId?: number | null;
 };
 
 type SessionPaginationOptions = {
@@ -143,13 +144,18 @@ function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessi
 function readProjectSessionsPageByPath(
   projectPath: string,
   options: SessionPaginationOptions = {},
+  userId?: number | null,
 ): ProjectSessionsPageResult {
   const pagination = normalizeSessionPagination(options);
-  const rows = sessionsDb.getSessionsByProjectPathPage(
-    projectPath,
-    pagination.limit,
-    pagination.offset,
-  ) as SessionRepositoryRow[];
+  const rows = userId != null
+    ? sessionsDb.getSessionsByProjectPathAndUserId(
+        projectPath, userId, pagination.limit, pagination.offset,
+      ) as SessionRepositoryRow[]
+    : sessionsDb.getSessionsByProjectPathPage(
+        projectPath,
+        pagination.limit,
+        pagination.offset,
+      ) as SessionRepositoryRow[];
   const total = sessionsDb.countSessionsByProjectPath(projectPath);
 
   return {
@@ -215,7 +221,7 @@ export async function getProjectsWithSessions(
     const sessionsPage = readProjectSessionsPageByPath(projectPath, {
       limit: options.sessionsLimit,
       offset: options.sessionsOffset,
-    });
+    }, options.userId);
 
     projects.push({
       projectId,
@@ -293,6 +299,7 @@ export async function getArchivedProjectsWithSessions(
 export async function getProjectSessionsPage(
   projectId: string,
   options: SessionPaginationOptions = {},
+  userId?: number | null,
 ): Promise<ProjectSessionsPageApiView> {
   const projectRow = projectsDb.getProjectById(projectId);
   if (!projectRow) {
@@ -302,7 +309,7 @@ export async function getProjectSessionsPage(
     });
   }
 
-  const sessionsPage = readProjectSessionsPageByPath(projectRow.project_path, options);
+  const sessionsPage = readProjectSessionsPageByPath(projectRow.project_path, options, userId);
   return {
     projectId: projectRow.project_id,
     sessions: sessionsPage.sessions,

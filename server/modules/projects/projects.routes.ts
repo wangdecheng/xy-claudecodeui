@@ -53,6 +53,16 @@ function parseNonNegativeIntQuery(value: unknown, name: string, fallback: number
   return parsedValue;
 }
 
+/**
+ * 从已验证的请求中提取 userId。
+ */
+function readReqUserId(req: express.Request): number | null {
+  const user = (req as express.Request & { user?: { id?: unknown; userId?: unknown } }).user;
+  if (!user) return null;
+  const id = user.id ?? user.userId;
+  return id != null ? Number(id) : null;
+}
+
 function resolveRouteErrorMessage(error: unknown): string {
   if (error instanceof AppError) {
     return error.message;
@@ -73,10 +83,12 @@ router.get(
       readQueryStringValue(req.query.skipSync).trim() === '1';
     const sessionsLimit = readOptionalNumericQueryValue(req.query.sessionsLimit) ?? undefined;
     const sessionsOffset = readOptionalNumericQueryValue(req.query.sessionsOffset) ?? undefined;
+    const userId = readReqUserId(req);
     const projects = await getProjectsWithSessions({
       skipSynchronization,
       sessionsLimit,
       sessionsOffset,
+      userId,
     });
     res.json(projects);
   }),
@@ -96,7 +108,8 @@ router.get(
     const projectId = typeof req.params.projectId === 'string' ? req.params.projectId : '';
     const limit = parseNonNegativeIntQuery(req.query.limit, 'limit', 20);
     const offset = parseNonNegativeIntQuery(req.query.offset, 'offset', 0);
-    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset });
+    const userId = readReqUserId(req);
+    const sessionsPage = await getProjectSessionsPage(projectId, { limit, offset }, userId);
     res.json(sessionsPage);
   }),
 );

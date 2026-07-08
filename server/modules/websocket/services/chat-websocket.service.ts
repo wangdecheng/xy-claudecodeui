@@ -2,7 +2,7 @@ import type { WebSocket } from 'ws';
 
 import { sessionsDb } from '@/modules/database/index.js';
 import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
-import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { addClient, removeClient, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
 import type {
   AnyRecord,
   AuthenticatedWebSocketRequest,
@@ -100,6 +100,24 @@ function readRequiredSessionId(data: AnyRecord): string | null {
 }
 
 /**
+ * 检查 WebSocket 消息的会话归属。
+ * userId 为 null 时不限制（单用户/平台模式）；session.user_id 为 null 时视为公开。
+ */
+function checkSessionOwnership(
+  ws: WebSocket,
+  sessionId: string,
+  userId: string | number | null,
+): boolean {
+  if (userId == null) return true;
+  const ownerId = sessionsDb.getSessionUserId(sessionId);
+  if (ownerId != null && ownerId !== Number(userId)) {
+    sendProtocolError(ws, 'SESSION_NOT_OWNED', 'You do not own this session.', sessionId);
+    return false;
+  }
+  return true;
+}
+
+/**
  * Handles `chat.send`: resolves the session row (provider, project path, and
  * provider-native id all come from the database — never from the client),
  * registers the run, and dispatches to the provider runtime.
@@ -137,6 +155,11 @@ async function handleChatSend(
       `Session "${sessionId}" was not found. Create it via POST /api/providers/sessions first.`,
       sessionId
     );
+    return;
+  }
+
+  // 多用户隔离：检查 WebSocket 连接用户是否拥有此会话
+  if (!checkSessionOwnership(ws, sessionId, userId)) {
     return;
   }
 
@@ -208,12 +231,17 @@ async function handleChatSend(
  */
 async function handleChatAbort(
   ws: WebSocket,
+  userId: string | number | null,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): Promise<void> {
   const sessionId = readRequiredSessionId(data);
   if (!sessionId) {
     sendProtocolError(ws, 'SESSION_ID_REQUIRED', 'chat.abort requires a sessionId.');
+    return;
+  }
+
+  if (!checkSessionOwnership(ws, sessionId, userId)) {
     return;
   }
 
@@ -245,6 +273,7 @@ async function handleChatAbort(
  */
 function handleChatSubscribe(
   ws: WebSocket,
+  userId: string | number | null,
   data: AnyRecord,
   dependencies: ChatWebSocketDependencies
 ): void {
@@ -260,6 +289,14 @@ function handleChatSubscribe(
       : '';
     if (!sessionId) {
       continue;
+    }
+
+    // 多用户隔离：跳过非归属会话
+    if (userId != null) {
+      const ownerId = sessionsDb.getSessionUserId(sessionId);
+      if (ownerId != null && ownerId !== Number(userId)) {
+        continue;
+      }
     }
 
     const lastSeqRaw = (target as AnyRecord).lastSeq;
@@ -346,9 +383,9 @@ export function handleChatConnection(
   dependencies: ChatWebSocketDependencies
 ): void {
   console.log('[INFO] Chat WebSocket connected');
-  connectedClients.add(ws);
-
   const userId = readRequestUserId(request);
+  const numericUserId = userId != null ? Number(userId) : null;
+  addClient(ws, numericUserId);
 
   ws.on('message', async (rawMessage) => {
     try {
@@ -370,13 +407,13 @@ export function handleChatConnection(
 
       switch (messageType) {
         case 'chat.send':
-          await handleChatSend(ws, userId, data, dependencies);
+          await handleChatSend(ws, numericUserId, data, dependencies);
           return;
         case 'chat.abort':
-          await handleChatAbort(ws, data, dependencies);
+          await handleChatAbort(ws, numericUserId, data, dependencies);
           return;
         case 'chat.subscribe':
-          handleChatSubscribe(ws, data, dependencies);
+          handleChatSubscribe(ws, numericUserId, data, dependencies);
           return;
         case 'chat.permission-response':
           handlePermissionResponse(data, dependencies);
@@ -394,6 +431,6 @@ export function handleChatConnection(
 
   ws.on('close', () => {
     console.log('[INFO] Chat client disconnected');
-    connectedClients.delete(ws);
+    removeClient(ws);
   });
 }

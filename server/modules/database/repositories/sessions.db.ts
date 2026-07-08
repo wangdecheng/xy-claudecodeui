@@ -75,10 +75,11 @@ type SessionRow = {
   isArchived: number;
   created_at: string;
   updated_at: string;
+  user_id: number | null;
 };
 
 const SESSION_ROW_COLUMNS =
-  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at';
+  'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, user_id';
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -123,12 +124,26 @@ function normalizeProjectPathForProvider(provider: string, projectPath: string):
 
 export const sessionsDb = {
   /**
+   * 查询会话的归属用户 ID。返回 null 表示公开会话（旧数据或无主）。
+   */
+  getSessionUserId(sessionId: string): number | null {
+    const db = getConnection();
+    const row = db
+      .prepare('SELECT user_id FROM sessions WHERE session_id = ?')
+      .get(sessionId) as { user_id: number | null } | undefined;
+    return row?.user_id ?? null;
+  },
+
+  /**
    * Upserts one session row discovered on disk by a provider synchronizer.
    *
    * The given id is the provider-native session id. Rows are keyed by
    * `provider_session_id` so a session that was first created by the app
    * (with an app-allocated `session_id`) is updated in place once its
    * transcript shows up on disk, instead of producing a duplicate row.
+   *
+   * `userId` 可选：HTTP 路由传入 req.user.id；文件系统观察者调用时不传（NULL）。
+   * NULL user_id 的会话对所有用户可见。
    */
   createSession(
     providerSessionId: string,
@@ -137,7 +152,8 @@ export const sessionsDb = {
     customName?: string,
     createdAt?: string,
     updatedAt?: string,
-    jsonlPath?: string | null
+    jsonlPath?: string | null,
+    userId?: number | string | null,
   ): string {
     const db = getConnection();
     // I-9 guard: chat is the historical default. We don't pass `kind` here
@@ -148,6 +164,7 @@ export const sessionsDb = {
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const normalizedUserId = userId != null ? Number(userId) : null;
 
     // First, ensure the project path is recorded in the projects table,
     // since it's a foreign key in the sessions table.
@@ -187,8 +204,8 @@ export const sessionsDb = {
     // keyed by the provider-native id for both columns. The ON CONFLICT path
     // covers legacy rows that predate the provider_session_id mapping.
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP))
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at, user_id)
+       VALUES (?, ?, ?, ?, ?, ?, 0, COALESCE(?, CURRENT_TIMESTAMP), COALESCE(?, CURRENT_TIMESTAMP), ?)
        ON CONFLICT(session_id) DO UPDATE SET
          provider = excluded.provider,
          provider_session_id = excluded.provider_session_id,
@@ -196,7 +213,8 @@ export const sessionsDb = {
          project_path = excluded.project_path,
          jsonl_path = excluded.jsonl_path,
          isArchived = 0,
-         custom_name = COALESCE(excluded.custom_name, sessions.custom_name)`
+         custom_name = COALESCE(excluded.custom_name, sessions.custom_name),
+         user_id = COALESCE(sessions.user_id, excluded.user_id)`
     ).run(
       providerSessionId,
       provider,
@@ -205,7 +223,8 @@ export const sessionsDb = {
       normalizedProjectPath,
       jsonlPath ?? null,
       createdAtValue,
-      updatedAtValue
+      updatedAtValue,
+      normalizedUserId,
     );
 
     return providerSessionId;
@@ -219,20 +238,21 @@ export const sessionsDb = {
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
    */
-  createAppSession(sessionId: string, provider: string, projectPath: string): string {
+  createAppSession(sessionId: string, provider: string, projectPath: string, userId?: number | string | null): string {
     const db = getConnection();
     // I-9 guard: app-allocated sessions are always `kind='chat'` (the
     // historical chat path). Onsite sessions should use
     // `createOnsiteSession(...)` instead.
     assertSessionKind('chat');
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const normalizedUserId = userId != null ? Number(userId) : null;
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
-      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at)
-       VALUES (?, ?, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`
-    ).run(sessionId, provider, normalizedProjectPath);
+      `INSERT INTO sessions (session_id, provider, provider_session_id, custom_name, project_path, jsonl_path, isArchived, created_at, updated_at, user_id)
+       VALUES (?, ?, NULL, NULL, ?, NULL, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)`
+    ).run(sessionId, provider, normalizedProjectPath, normalizedUserId);
 
     return sessionId;
   },
@@ -253,20 +273,22 @@ export const sessionsDb = {
     provider: string,
     projectPath: string,
     options: OnsiteSessionOptions,
+    userId?: number | string | null,
   ): string {
     assertSessionKind('onsite');
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
+    const normalizedUserId = userId != null ? Number(userId) : null;
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
     db.prepare(
       `INSERT INTO sessions (
          session_id, provider, project_path, kind, cwd, third_bridge_branch, iteration, database,
-         isArchived, created_at, updated_at
+         isArchived, created_at, updated_at, user_id
        ) VALUES (
          ?, ?, ?, 'onsite', ?, ?, ?, ?,
-         0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+         0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?
        )`,
     ).run(
       sessionId,
@@ -276,6 +298,7 @@ export const sessionsDb = {
       options.third_bridge_branch,
       options.iteration,
       options.database,
+      normalizedUserId,
     );
 
     return sessionId;
@@ -539,6 +562,49 @@ export const sessionsDb = {
       .get(normalizedProjectPath) as { count: number } | undefined;
 
     return Number(row?.count ?? 0);
+  },
+
+  /**
+   * 按项目路径和用户过滤的分页会话查询。
+   * userId 为 null 时不过滤（兼容单用户模式）。
+   */
+  getSessionsByProjectPathAndUserId(
+    projectPath: string,
+    userId: number | null,
+    limit: number,
+    offset: number,
+  ): SessionRow[] {
+    const db = getConnection();
+    const normalizedProjectPath = normalizeProjectPath(projectPath);
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE project_path = ?
+           AND isArchived = 0
+           AND (user_id IS NULL OR ? IS NULL OR user_id = ?)
+         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC
+         LIMIT ? OFFSET ?`
+      )
+      .all(normalizedProjectPath, userId, userId, limit, offset) as SessionRow[];
+    return normalizeSessionRows(rows);
+  },
+
+  /**
+   * 按用户过滤的归档会话查询。
+   */
+  getArchivedSessionsByUserId(userId: number | null): SessionRow[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_ROW_COLUMNS}
+         FROM sessions
+         WHERE isArchived = 1
+           AND (user_id IS NULL OR ? IS NULL OR user_id = ?)
+         ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`
+      )
+      .all(userId, userId) as SessionRow[];
+    return normalizeSessionRows(rows);
   },
 
   deleteSessionsByProjectPath(projectPath: string): void {

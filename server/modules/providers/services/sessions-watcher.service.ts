@@ -6,7 +6,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 
 import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
-import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
+import { WS_OPEN_STATE, connectedClients, clientUserMap } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 
@@ -211,9 +211,22 @@ async function flushPendingWatcherUpdate(): Promise<void> {
     }
 
     if (events.length > 0) {
+      // 多用户隔离：每个事件只发送给归属用户（或公开给所有人）
+      const eventsWithOwners = events.map(event => {
+        try {
+          const parsed = JSON.parse(event) as { sessionId?: string };
+          const ownerId = parsed.sessionId ? sessionsDb.getSessionUserId(parsed.sessionId) : null;
+          return { event, ownerId };
+        } catch {
+          return { event, ownerId: null };
+        }
+      });
+
       connectedClients.forEach(client => {
-        if (client.readyState === WS_OPEN_STATE) {
-          for (const event of events) {
+        if (client.readyState !== WS_OPEN_STATE) return;
+        const clientUserId = clientUserMap.get(client);
+        for (const { event, ownerId } of eventsWithOwners) {
+          if (ownerId == null || clientUserId == null || clientUserId === ownerId) {
             client.send(event);
           }
         }

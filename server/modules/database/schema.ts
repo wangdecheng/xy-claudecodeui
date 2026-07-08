@@ -122,6 +122,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     third_bridge_branch TEXT,
     iteration TEXT,
     database TEXT,
+    -- 多用户隔离：会话归属用户，NULL 表示公开（旧数据/观察者创建）
+    user_id INTEGER,
     PRIMARY KEY (session_id),
     FOREIGN KEY (project_path) REFERENCES projects(project_path)
     ON DELETE SET NULL

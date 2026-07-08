@@ -17,8 +17,20 @@ import type {
   UpsertProviderMcpServerInput,
 } from '@/shared/types.js';
 import { AppError, asyncHandler, createApiSuccessResponse } from '@/shared/utils.js';
+import { sessionsDb } from '@/modules/database/index.js';
 
 const router = express.Router();
+
+/**
+ * 从已验证的请求中提取 userId。平台模式用 getFirstUser().id，
+ * OSS 模式用 JWT decoded.userId。
+ */
+function readReqUserId(req: Request): number | null {
+  const user = (req as Request & { user?: { id?: unknown; userId?: unknown } }).user;
+  if (!user) return null;
+  const id = user.id ?? user.userId;
+  return id != null ? Number(id) : null;
+}
 
 const readPathParam = (value: unknown, name: string): string => {
   if (typeof value === 'string') {
@@ -400,6 +412,17 @@ router.post(
   asyncHandler(async (req: Request, res: Response) => {
     const provider = parseProvider(req.params.provider);
     const sessionId = parseSessionId(req.params.sessionId);
+    // 多用户隔离：检查会话归属
+    const userId = readReqUserId(req);
+    if (userId != null) {
+      const ownerId = sessionsDb.getSessionUserId(sessionId);
+      if (ownerId != null && ownerId !== userId) {
+        throw new AppError('You do not own this session.', {
+          code: 'SESSION_NOT_OWNED',
+          statusCode: 403,
+        });
+      }
+    }
     const payload = parseChangeActiveModelPayload(req.body);
     const result = await providerModelsService.changeActiveModel(provider, {
       ...payload,
@@ -536,7 +559,8 @@ router.post(
     const body = (req.body ?? {}) as Record<string, unknown>;
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
-    const result = sessionsService.createAppSession(provider, projectPath);
+    const userId = readReqUserId(req);
+    const result = sessionsService.createAppSession(provider, projectPath, userId);
     res.status(201).json(createApiSuccessResponse(result));
   }),
 );
@@ -551,8 +575,9 @@ router.get(
 
 router.get(
   '/sessions/archived',
-  asyncHandler(async (_req: Request, res: Response) => {
-    const sessions = sessionsService.listArchivedSessions();
+  asyncHandler(async (req: Request, res: Response) => {
+    const userId = readReqUserId(req);
+    const sessions = sessionsService.listArchivedSessions(userId);
     res.json(createApiSuccessResponse({ sessions }));
   }),
 );
@@ -561,12 +586,13 @@ router.delete(
   '/sessions/:sessionId',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
+    const userId = readReqUserId(req);
     const force = parseOptionalBooleanQuery(req.query.force, 'force') ?? false;
     const deletedFromDisk = parseOptionalBooleanQuery(req.query.deletedFromDisk, 'deletedFromDisk') ?? force;
     const result = await sessionsService.deleteOrArchiveSessionById(sessionId, {
       force,
       deletedFromDisk,
-    });
+    }, userId);
     res.json(createApiSuccessResponse(result));
   }),
 );
@@ -575,7 +601,8 @@ router.post(
   '/sessions/:sessionId/restore',
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
-    const result = sessionsService.restoreSessionById(sessionId);
+    const userId = readReqUserId(req);
+    const result = sessionsService.restoreSessionById(sessionId, userId);
     res.json(createApiSuccessResponse(result));
   }),
 );
@@ -585,7 +612,8 @@ router.put(
   asyncHandler(async (req: Request, res: Response) => {
     const sessionId = parseSessionId(req.params.sessionId);
     const summary = parseSessionRenameSummary(req.body);
-    const result = sessionsService.renameSessionById(sessionId, summary);
+    const userId = readReqUserId(req);
+    const result = sessionsService.renameSessionById(sessionId, summary, userId);
     res.json(createApiSuccessResponse(result));
   }),
 );
@@ -621,10 +649,11 @@ router.get(
       offset = parsedOffset;
     }
 
+    const userId = readReqUserId(req);
     const result = await sessionsService.fetchHistory(sessionId, {
       limit,
       offset,
-    });
+    }, userId);
     res.json(createApiSuccessResponse(result));
   }),
 );

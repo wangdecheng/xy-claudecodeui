@@ -13,6 +13,25 @@ import type {
 } from '@/shared/types.js';
 import { AppError } from '@/shared/utils.js';
 
+/**
+ * 检查会话归属：userId 为 null（单用户/平台模式）时不限制；
+ * session.user_id 为 null 时视为公开（所有人可访问）；
+ * 否则仅允许 session 归属用户操作。
+ */
+function assertSessionOwnership(
+  sessionId: string,
+  userId: number | string | null | undefined,
+): void {
+  if (userId == null) return;
+  const ownerId = sessionsDb.getSessionUserId(sessionId);
+  if (ownerId != null && ownerId !== Number(userId)) {
+    throw new AppError('You do not own this session.', {
+      code: 'SESSION_NOT_OWNED',
+      statusCode: 403,
+    });
+  }
+}
+
 type CreateAppSessionResult = {
   sessionId: string;
   provider: LLMProvider;
@@ -120,7 +139,11 @@ export const sessionsService = {
    * for the lifetime of the conversation. The provider-native id is mapped to
    * this row later, when the provider runtime announces it mid-run.
    */
-  createAppSession(provider: LLMProvider, projectPath: string): CreateAppSessionResult {
+  createAppSession(
+    provider: LLMProvider,
+    projectPath: string,
+    userId?: number | string | null,
+  ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {
       throw new AppError('projectPath is required.', {
@@ -130,7 +153,7 @@ export const sessionsService = {
     }
 
     const sessionId = randomUUID();
-    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath);
+    sessionsDb.createAppSession(sessionId, provider, normalizedProjectPath, userId);
 
     return {
       sessionId,
@@ -151,6 +174,7 @@ export const sessionsService = {
   async fetchHistory(
     sessionId: string,
     options: Pick<FetchHistoryOptions, 'limit' | 'offset'> = {},
+    userId?: number | string | null,
   ): Promise<FetchHistoryResult> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -159,6 +183,8 @@ export const sessionsService = {
         statusCode: 404,
       });
     }
+
+    assertSessionOwnership(sessionId, userId);
 
     // App-created sessions that never produced a provider transcript yet
     // (e.g. first message still streaming) simply have no history.
@@ -193,8 +219,9 @@ export const sessionsService = {
    * Returns archived sessions with enough project metadata for the sidebar to
    * group, filter, open, and restore them without a per-row follow-up query.
    */
-  listArchivedSessions(): ArchivedSessionListItem[] {
-    const archivedSessions = sessionsDb.getArchivedSessions();
+  listArchivedSessions(userId?: number | string | null): ArchivedSessionListItem[] {
+    const normalizedUserId = userId != null ? Number(userId) : null;
+    const archivedSessions = sessionsDb.getArchivedSessionsByUserId(normalizedUserId);
     const projectCache = new Map<string, ReturnType<typeof projectsDb.getProjectPath>>();
 
     return archivedSessions.map((session) => {
@@ -236,6 +263,7 @@ export const sessionsService = {
       force?: boolean;
       deletedFromDisk?: boolean;
     } = {},
+    userId?: number | string | null,
   ): Promise<{ sessionId: string; action: 'archived' | 'deleted'; deletedFromDisk: boolean }> {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
@@ -244,6 +272,8 @@ export const sessionsService = {
         statusCode: 404,
       });
     }
+
+    assertSessionOwnership(sessionId, userId);
 
     if (!options.force) {
       sessionsDb.updateSessionIsArchived(sessionId, true);
@@ -277,7 +307,10 @@ export const sessionsService = {
   /**
    * Restores one archived session back into the active sidebar lists.
    */
-  restoreSessionById(sessionId: string): { sessionId: string; isArchived: false } {
+  restoreSessionById(
+    sessionId: string,
+    userId?: number | string | null,
+  ): { sessionId: string; isArchived: false } {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
@@ -285,6 +318,8 @@ export const sessionsService = {
         statusCode: 404,
       });
     }
+
+    assertSessionOwnership(sessionId, userId);
 
     sessionsDb.updateSessionIsArchived(sessionId, false);
     return { sessionId, isArchived: false };
@@ -293,7 +328,11 @@ export const sessionsService = {
   /**
    * Renames one session by id without requiring the caller to pass provider.
    */
-  renameSessionById(sessionId: string, summary: string): { sessionId: string; summary: string } {
+  renameSessionById(
+    sessionId: string,
+    summary: string,
+    userId?: number | string | null,
+  ): { sessionId: string; summary: string } {
     const session = sessionsDb.getSessionById(sessionId);
     if (!session) {
       throw new AppError(`Session "${sessionId}" was not found.`, {
@@ -301,6 +340,8 @@ export const sessionsService = {
         statusCode: 404,
       });
     }
+
+    assertSessionOwnership(sessionId, userId);
 
     sessionsDb.updateSessionCustomName(sessionId, summary);
     return { sessionId, summary };

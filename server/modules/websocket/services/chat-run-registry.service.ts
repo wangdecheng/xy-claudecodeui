@@ -4,7 +4,7 @@ import { projectsDb, sessionsDb } from '@/modules/database/index.js';
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 import { generateDisplayName } from '@/modules/projects/index.js';
 import { ChatSessionWriter } from '@/modules/websocket/services/chat-session-writer.service.js';
-import { connectedClients, WS_OPEN_STATE } from '@/modules/websocket/services/websocket-state.service.js';
+import { connectedClients, WS_OPEN_STATE, clientUserMap } from '@/modules/websocket/services/websocket-state.service.js';
 import { disciplineSofteningMiddleware } from '@/modules/onsite-analysis/discipline/discipline-softening.middleware.js';
 import { disciplineTraceIdMiddleware } from '@/modules/onsite-analysis/discipline/discipline-trace-id.middleware.js';
 import { disciplineWriteProtectionMiddleware } from '@/modules/onsite-analysis/discipline/discipline-write-protection.middleware.js';
@@ -112,10 +112,15 @@ async function broadcastCanonicalSessionUpsert(appSessionId: string): Promise<vo
     timestamp: new Date().toISOString(),
   });
 
+  // 多用户隔离：只广播给归属用户（或公开会话广播给所有人）
+  const sessionUserId = sessionsDb.getSessionUserId(appSessionId);
   connectedClients.forEach((client) => {
-    if (client.readyState === WS_OPEN_STATE) {
-      client.send(payload);
+    if (client.readyState !== WS_OPEN_STATE) return;
+    if (sessionUserId != null) {
+      const clientUserId = clientUserMap.get(client);
+      if (clientUserId != null && clientUserId !== sessionUserId) return;
     }
+    client.send(payload);
   });
 }
 
