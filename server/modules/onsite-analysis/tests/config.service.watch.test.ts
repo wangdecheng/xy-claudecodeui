@@ -53,7 +53,7 @@ test.beforeEach(() => {
 test('mtime change triggers callback and replaces singleton', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-'));
   const file = path.join(dir, 'cfg.json');
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
 
   await loadConfig(file);
   const off = watchConfig(file);
@@ -74,7 +74,7 @@ test('mtime change triggers callback and replaces singleton', async (t) => {
     file,
     JSON.stringify({
       customers: [
-        { label: '不涉及三方对接', branch: null },
+        { label: '其他问题', branch: null },
         { label: '山西公安', branch: 'master_5.2_3.2' },
       ],
       iterations: ['master_5.2_3.2'],
@@ -87,13 +87,13 @@ test('mtime change triggers callback and replaces singleton', async (t) => {
   assert.ok(calls >= 1, 'callback should fire');
   const current = getConfig();
   assert.equal(current.data.customers[1].label, '山西公安', 'singleton should reflect new content');
-  assert.equal(lastLabel, '不涉及三方对接');
+  assert.equal(lastLabel, '其他问题');
 });
 
 test('unsubscribe stops further callbacks', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-unsub-'));
   const file = path.join(dir, 'cfg.json');
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await loadConfig(file);
   const off = watchConfig(file);
   t.after(off);
@@ -107,7 +107,7 @@ test('unsubscribe stops further callbacks', async (t) => {
   unsub();
 
   // Mutate again; callback should NOT fire
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }, { label: 'X', branch: 'master_x' }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }, { label: 'X', branch: 'master_x' }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await new Promise((r) => setTimeout(r, 1000));
 
   assert.equal(calls, callsAfterWarmup, 'callback should not fire after unsubscribe');
@@ -116,7 +116,7 @@ test('unsubscribe stops further callbacks', async (t) => {
 test('multiple subscribers all receive callbacks', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-multi-'));
   const file = path.join(dir, 'cfg.json');
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await loadConfig(file);
   const off = watchConfig(file);
   t.after(off);
@@ -129,7 +129,7 @@ test('multiple subscribers all receive callbacks', async (t) => {
   const unsubC = onConfigChange(() => { c += 1; });
   t.after(() => { unsubA(); unsubB(); unsubC(); });
 
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2', 'release_5.2_3.2_20260327'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2', 'release_5.2_3.2_20260327'] }), 'utf8');
 
   await waitFor(() => a >= 1 && b >= 1 && c >= 1);
 
@@ -139,7 +139,7 @@ test('multiple subscribers all receive callbacks', async (t) => {
 test('invalid config on re-read is rejected, singleton stays at last known good', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-invalid-'));
   const file = path.join(dir, 'cfg.json');
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await loadConfig(file);
   const off = watchConfig(file);
   t.after(off);
@@ -154,7 +154,7 @@ test('invalid config on re-read is rejected, singleton stays at last known good'
   t.after(unsub);
 
   // Write a bad config (first item has branch set)
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: 'master_5.2_3.2' }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: 'master_5.2_3.2' }], iterations: ['master_5.2_3.2'] }), 'utf8');
 
   await waitFor(() => invalidCalls >= 1, 4000);
 
@@ -166,7 +166,7 @@ test('invalid config on re-read is rejected, singleton stays at last known good'
 test('watchConfig returns an unsubscribe function that stops the watcher', async (t) => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-watch-off-'));
   const file = path.join(dir, 'cfg.json');
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await loadConfig(file);
 
   const off = watchConfig(file);
@@ -176,7 +176,7 @@ test('watchConfig returns an unsubscribe function that stops the watcher', async
   const unsub = onConfigChange(() => { calls += 1; });
   t.after(unsub);
 
-  await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }, { label: 'Y', branch: 'master_y' }], iterations: ['master_5.2_3.2'] }), 'utf8');
+  await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }, { label: 'Y', branch: 'master_y' }], iterations: ['master_5.2_3.2'] }), 'utf8');
   await new Promise((r) => setTimeout(r, 1000));
   assert.equal(calls, 0, 'watcher should be stopped');
 });

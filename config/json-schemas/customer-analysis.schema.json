@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://cloudcli.local/schemas/customer-analysis.schema.json",
   "title": "CustomerOnsiteAnalysisConfig",
-  "description": "客户现场问题分析系统 — 新建向导下拉驱动配置（customer + iteration）。首项必须是「不涉及三方对接」且 branch=null。branch 字段允许三种形态：null、master_/release_ 前缀的 Git 分支名、或者短标识符（如 zgj_565939、sinopec、sse 等）。配置是单一真实来源 — UI 不允许手动输入。",
+  "description": "客户现场问题分析系统 — 新建向导下拉驱动配置（customer + iteration）。首项必须是「其他问题」且 branch=null（占位项，标识不涉及三方分支对接）。branch 字段允许三种形态：null、master_/release_ 前缀的 Git 分支名、或者短标识符（如 zgj_565939、sinopec、sse 等）。配置是单一真实来源 — UI 不允许手动输入。",
   "type": "object",
   "required": ["customers", "iterations"],
   "additionalProperties": true,
@@ -47,7 +47,7 @@
   },
   "allOf": [
     {
-      "description": "customers[0] 必须是「不涉及三方对接」且 branch=null",
+      "description": "customers[0] 必须是「其他问题」且 branch=null",
       "properties": {
         "customers": {
           "items": [
@@ -56,7 +56,7 @@
               "required": ["label", "branch"],
               "additionalProperties": true,
               "properties": {
-                "label": { "const": "不涉及三方对接" },
+                "label": { "const": "其他问题" },
                 "branch": { "type": "null" }
               }
             }

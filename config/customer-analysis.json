@@ -1,7 +1,7 @@
 {
   "_comment": "客户现场问题分析系统 - 新建向导下拉选项配置。客户名/迭代名都由本配置驱动，UI 不允许手动输入。新增条目直接改本文件即可。",
   "customers": [
-    { "label": "不涉及三方对接", "branch": null },
+    { "label": "其他问题", "branch": null },
     { "label": "山西公安", "branch": "master_5.2_3.2" },
     { "label": "最高检", "branch": "zgj_565939" },
     { "label": "中石化", "branch": "sinopec" },

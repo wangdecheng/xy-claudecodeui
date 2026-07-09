@@ -33,13 +33,13 @@ test.beforeEach(() => {
   resetConfig();
 });
 
-test('loadConfig parses 13 customers + 2 iterations from real config', async () => {
+test('loadConfig parses 15 customers + 2 iterations from real config', async () => {
   const cfg = await loadConfig(GOOD_CONFIG);
 
   assert.equal(cfg.status, 'OK');
-  assert.equal(cfg.data.customers.length, 13);
-  assert.equal(cfg.data.iterations.length, 2);
-  assert.equal(cfg.data.customers[0].label, '不涉及三方对接');
+  assert.equal(cfg.data.customers.length, 15);
+  assert.equal(cfg.data.iterations.length, 6);
+  assert.equal(cfg.data.customers[0].label, '其他问题');
   assert.equal(cfg.data.customers[0].branch, null);
   assert.equal(typeof cfg.mtime, 'string');
   assert.ok(cfg.mtime.length > 0);
@@ -99,7 +99,7 @@ test('loadConfig with relative path resolves from process.cwd()', async () => {
   const dir = await mkdtemp(path.join(tmpdir(), 'cfg-rel-'));
   try {
     const file = path.join(dir, 'cfg.json');
-    await writeFile(file, JSON.stringify({ customers: [{ label: '不涉及三方对接', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
+    await writeFile(file, JSON.stringify({ customers: [{ label: '其他问题', branch: null }], iterations: ['master_5.2_3.2'] }), 'utf8');
     const previousCwd = process.cwd();
     process.chdir(dir);
     try {

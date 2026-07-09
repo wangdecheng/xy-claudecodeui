@@ -10,7 +10,7 @@
  *    `third_bridge_branch` from POST /problems (server treats explicit
  *    null differently from missing — see problem.service.ts).
  *  - **no-third-party cwd resolution**: when matched.branch is null
- *    (e.g. "不涉及三方对接"), we send `cwd: customer` (the label).
+ *    (e.g. "其他问题"), we send `cwd: customer` (the label).
  *    The server's `assertCwdUnderRoot` resolves that against
  *    `~/work/customer-onsite-analysis/`, which yields a path that IS
  *    under root (no `..` segment), so no throw. The directory name then

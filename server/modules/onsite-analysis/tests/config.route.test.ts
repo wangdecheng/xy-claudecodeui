@@ -42,7 +42,7 @@ const samplePayload: ConfigPayload = {
   mtime: new Date().toISOString(),
   data: {
     customers: [
-      { label: '不涉及三方对接', branch: null },
+      { label: '其他问题', branch: null },
       { label: '山西公安', branch: 'master_5.2_3.2' },
     ],
     iterations: ['release_5.2_3.2_20260327', 'master_5.2_3.2'],
@@ -63,9 +63,9 @@ test('GET /api/onsite/config returns 200 + payload when loaded', async () => {
   assert.equal(response.body.status, 'OK');
   assert.ok(Array.isArray(response.body.data.customers));
   assert.ok(response.body.data.customers.length >= 13);
-  assert.equal(response.body.data.customers[0].label, '不涉及三方对接');
+  assert.equal(response.body.data.customers[0].label, '其他问题');
   assert.equal(response.body.data.customers[0].branch, null);
-  assert.equal(response.body.data.iterations.length, 2);
+  assert.equal(response.body.data.iterations.length, 6);
 });
 
 test('GET /api/onsite/config sets Cache-Control: no-store header', async () => {

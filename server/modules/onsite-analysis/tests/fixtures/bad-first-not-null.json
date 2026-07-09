@@ -1,7 +1,7 @@
 {
   "_comment": "Bad fixture: first customer has branch != null. Used by config.service.test.ts.",
   "customers": [
-    { "label": "不涉及三方对接", "branch": "master_5.2_3.2" },
+    { "label": "其他问题", "branch": "master_5.2_3.2" },
     { "label": "山西公安", "branch": "master_5.2_3.2" }
   ],
   "iterations": [

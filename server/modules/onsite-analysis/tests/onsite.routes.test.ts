@@ -54,7 +54,7 @@ const samplePayload: ConfigPayload = {
   mtime: new Date().toISOString(),
   data: {
     customers: [
-      { label: '不涉及三方对接', branch: null },
+      { label: '其他问题', branch: null },
       { label: '山西公安', branch: 'master_5.2_3.2' },
       { label: '浙一', branch: null },
     ],

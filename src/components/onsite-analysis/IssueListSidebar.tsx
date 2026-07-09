@@ -61,7 +61,8 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
           (p) =>
             p.customer.toLowerCase().includes(q) ||
             p.iteration.toLowerCase().includes(q) ||
-            p.database.toLowerCase().includes(q),
+            p.database.toLowerCase().includes(q) ||
+            (p.description ?? '').toLowerCase().includes(q),
         )
       : problems;
     // 按创建时间降序排列，最新的排最前面

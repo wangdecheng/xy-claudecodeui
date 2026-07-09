@@ -4,7 +4,7 @@
  * 渲染 客户 / 迭代 / 数据库 / third-bridge 分支 四个 chip,数据来自 ProblemRecord。
  * 规则(对齐原型):
  *  - database 为空且 status==='pending_info' → 该 chip 用琥珀「缺:数据库类型」样式;
- *  - third_bridge_branch===null(不涉及三方对接) → 隐藏分支 chip。
+ *  - third_bridge_branch===null(其他问题) → 隐藏分支 chip。
  */
 
 import type { ProblemRecord } from '@shared/onsite-types';
@@ -37,7 +37,7 @@ function Chip({
 }
 
 export default function AnalysisInfoChips({ problem }: AnalysisInfoChipsProps) {
-  // 客户首项「不涉及三方对接」时,third_bridge_branch 为 null,直接不渲染该 chip
+  // 客户首项「其他问题」时,third_bridge_branch 为 null,直接不渲染该 chip
   const hideThirdBridge = problem.third_bridge_branch === null;
 
   return (

@@ -42,9 +42,9 @@ interface RawJsonlLine {
 function encodeProjectPath(cwd: string): string {
   // 与 Claude Code 磁盘目录命名一致:把所有「非字母数字且非 -」的字符
   // 替换为 -(参考 server/index.js 中 encodedPath 的同一规则)。
-  // 关键:`/` 与非 ASCII 字符(如中文 problem 目录名「不涉及三方对接」)
-  // 都会被替换成 -,因此 /Users/.../20260707-不涉及三方对接
-  // → -Users-...-20260707--------
+  // 关键:`/` 与非 ASCII 字符(如中文 problem 目录名「其他问题」)
+  // 都会被替换成 -,因此 /Users/.../20260707-其他问题
+  // → -Users-...-20260707----
   // 旧实现只 replace(/\//g, '-') 会保留中文,与真实磁盘目录对不上,
   // 导致含中文的 onsite problem 永远扫不到 JSONL、历史加载为空。
   return cwd.replace(/[^a-zA-Z0-9-]/g, '-');

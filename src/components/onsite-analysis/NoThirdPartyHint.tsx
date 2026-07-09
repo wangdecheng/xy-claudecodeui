@@ -1,6 +1,6 @@
 /**
  * NoThirdPartyHint — amber banner shown when the selected customer is
- * the first option (= "不涉及三方对接" / "no third-party branch").
+ * the first option (= "其他问题" / "no third-party branch").
  *
  * Semantics (server contract, see config.service.ts):
  *   config.data.customers[0].branch === null

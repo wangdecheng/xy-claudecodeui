@@ -407,7 +407,7 @@ const addProviderSessionIdMapping = (db: Database): void => {
   // 是 1:1 不变映射。
   //
   // 必须显式排除 onsite 行:onsite session 由 problemId 当主键(如
-  // `20260706-不涉及三方对接`),Claude CLI 拒绝非 UUID 的 --resume 值
+  // `20260706-其他问题`),Claude CLI 拒绝非 UUID 的 --resume 值
   // (`Provided value "20260706-..." is not a UUID and does not match any
   // session title`)。onsite 的 provider_session_id 必须由 Claude runtime
   // 真正跑出第一个 session 时写回(UUID),空着等它回写才对。

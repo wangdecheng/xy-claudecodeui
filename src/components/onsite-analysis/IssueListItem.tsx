@@ -2,10 +2,14 @@
  * IssueListItem — one row in the issue-list sidebar.
  *
  * Renders:
- *  - customer name
+ *  - 问题描述(description)截断 20 字 + 省略号,鼠标悬浮展示完整(原始全量在 title 属性里)
  *  - cwd directory short-name (last segment, e.g. "20260704-山西公安")
- *  - iteration + database chips
+ *  - customer / iteration / database chips
  *  - relative time (parsed from cwd's leading date or created_at fallback)
+ *
+ * 设计动机:首项客户「其他问题」(原"不涉及三方对接")会反复出现,若以 customer
+ * 作为标题会出现一长列重复标题,看不出每条在排查什么。改用必填的 description
+ * 作为主标题后,每条天然不同,搜索框也同步扩展到 description 字段。
  *
  * Click → selectProblem(id) + navigate to /onsite/:id
  */
@@ -24,6 +28,8 @@ export interface IssueListItemProps {
   problem: ProblemListItem;
   active?: boolean;
 }
+
+const DESCRIPTION_PREVIEW_MAX = 20;
 
 function formatRelative(isoOrUndefined: string | undefined, cwd: string): string {
   // Try created_at first.
@@ -54,6 +60,23 @@ function cwdShortName(cwd: string): string {
   return parts.length === 0 ? cwd : (parts[parts.length - 1] ?? cwd);
 }
 
+/**
+ * 列表标题:description 截断到 DESCRIPTION_PREVIEW_MAX 字,超长加省略号。
+ * 完整内容走 title 属性,鼠标悬浮展示。若 description 为空(旧数据/异常),
+ * 回退到 customer,保证至少有一段可识别文本。
+ */
+function buildTitleText(problem: ProblemListItem): { text: string; title: string } {
+  const raw = (problem.description ?? '').trim();
+  if (raw.length === 0) {
+    return { text: problem.customer || '(无描述)', title: '' };
+  }
+  const truncated = raw.length > DESCRIPTION_PREVIEW_MAX;
+  return {
+    text: truncated ? `${raw.slice(0, DESCRIPTION_PREVIEW_MAX)}…` : raw,
+    title: raw,
+  };
+}
+
 export default function IssueListItem({ problem, active }: IssueListItemProps) {
   const { t } = useTranslation(['onsite', 'common']);
   const navigate = useNavigate();
@@ -64,6 +87,10 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
     [problem.created_at, problem.cwd],
   );
   const shortName = useMemo(() => cwdShortName(problem.cwd), [problem.cwd]);
+  const { text: titleText, title: titleAttr } = useMemo(
+    () => buildTitleText(problem),
+    [problem],
+  );
 
   const handleClick = () => {
     selectProblem(problem.id);
@@ -125,12 +152,21 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
         <Trash2 className="h-3.5 w-3.5" />
       </button>
       <div className="flex items-center justify-between gap-2 pr-5">
-        <span className="truncate text-sm font-medium text-foreground" title={problem.customer}>
-          {problem.customer}
+        <span className="truncate text-sm font-medium text-foreground" title={titleAttr || undefined}>
+          {titleText}
         </span>
       </div>
       <div className="mt-1 truncate text-xs text-muted-foreground" title={problem.cwd}>
         📁 {shortName}
+        {problem.customer && (
+          <span
+            data-testid="onsite-issue-item-customer"
+            className="ml-1.5 text-[10px] text-muted-foreground/80"
+            title={problem.customer}
+          >
+            · {problem.customer}
+          </span>
+        )}
       </div>
       <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <div className="flex flex-wrap gap-1">
