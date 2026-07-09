@@ -238,6 +238,39 @@ router.get('/problems/:id', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/onsite/problems/:id
+// ---------------------------------------------------------------------------
+//
+// 物理删除一条 problem:磁盘目录(含 problem.json + 解压日志)+ DB 主表行
+// (子表经 ON DELETE CASCADE 清空)+ 内存 ring buffer。成功后广播
+// problems:changed,通知所有客户端重新拉列表。删除是不可逆操作,前端
+// 走 window.confirm 二次确认。CwdEscapeError 翻译成 409(理论上 record
+// 已经过创建期校验,这里是防御性二次校验)。
+
+router.delete('/problems/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    const result = await problemService.remove(id);
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
+    }
+    onsiteBroadcast.broadcast({ type: 'problems:changed' });
+    res.json({ id: result.id, deleted: true });
+  } catch (error: unknown) {
+    if (error instanceof CwdEscapeError) {
+      return res.status(409).json({
+        error: 'CWD_ESCAPE',
+        message: error.message,
+        cwd: error.cwd,
+        root: error.root,
+      });
+    }
+    const message = error instanceof Error ? error.message : 'delete failed';
+    res.status(500).json({ error: 'DELETE_FAILED', message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // PATCH /api/onsite/problems/:id
 // ---------------------------------------------------------------------------
 

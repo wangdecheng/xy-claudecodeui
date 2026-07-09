@@ -56,6 +56,10 @@
     "composerHint": "仅对接 Claude Code · 工作目录锁定在 {{cwd}}",
     "emptyDefault": "暂无消息"
   },
+  "delete": {
+    "button": "删除",
+    "confirm": "删除该分析历史？将一并移除磁盘日志与数据库记录,不可恢复。"
+  },
   "common": {
     "back": "返回",
     "loading": "加载中...",

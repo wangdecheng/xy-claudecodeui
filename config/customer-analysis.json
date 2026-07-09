@@ -13,7 +13,9 @@
     { "label": "光大集团", "branch": "gdjt" },
     { "label": "上海大数据", "branch": "wechat-standard-new-v2" },
     { "label": "上海大数据（旧版）", "branch": "wechat-sh-datacenter" },
-    { "label": "中车长客（zcck）", "branch": "zcck" }
+    { "label": "中车长客（zcck）", "branch": "zcck" },
+    { "label": "中信银行（ASSO/CMTS）", "branch": "zxyh-asso-cbsp" },
+    { "label": "五矿集团公有云", "branch": "wkjt" }
   ],
   "iterations": [
     "release_5.2_3.2_20260327",

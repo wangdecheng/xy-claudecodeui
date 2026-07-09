@@ -88,6 +88,18 @@ export const onsiteProblemsDb = {
   },
 
   /**
+   * 删除一条 problem 记录。子表 onsite_files / onsite_state_audit /
+   * onsite_discipline_log 已配置 ON DELETE CASCADE(PRAGMA foreign_keys
+   * 已在初始化时启用),会随主表行一并清空,无需手动删。
+   * 注意:此方法只清 DB 行,不动磁盘目录与内存缓冲 -- 完整清理请走
+   * problemService.remove()(它负责 rm 磁盘 + clear messagesStore)。
+   */
+  deleteById(id: string): void {
+    const db = getConnection();
+    db.prepare('DELETE FROM onsite_problems WHERE id = ?').run(id);
+  },
+
+  /**
    * Update only the `status` column + bump `updated_at`. The "Only" suffix
    * makes the contract explicit: this method does NOT write an audit row.
    * Callers that need to record the reason / actor must additionally call

@@ -56,6 +56,10 @@
     "suspectToast": "本次根因摘要可能不准确,建议复核证据",
     "writeProtectionCounter": "当前根因已锁定,如需修改请联系管理员"
   },
+  "delete": {
+    "button": "删除",
+    "confirm": "删除该分析历史？将一并移除磁盘日志与数据库记录,不可恢复。"
+  },
   "common": {
     "back": "返回",
     "loading": "加载中...",

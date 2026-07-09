@@ -348,3 +348,86 @@ test('create 不接 date 字段时,默认用今天(向后兼容)', async () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// remove - 删除 problem(磁盘目录 + DB 行 + 内存缓冲)
+// ---------------------------------------------------------------------------
+
+test('remove 删除磁盘目录 + DB 行 + 清内存', async () => {
+  await withIsolatedEnv(async () => {
+    const { messagesStore } = await import('../messages-store.service.js');
+    const { onsiteProblemsDb } = await import('@/modules/database/repositories/onsite-problems.db.js');
+    const { existsSync } = await import('node:fs');
+
+    const created = await problemService.create({
+      customer: '山西公安',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '待删除的占位描述',
+    });
+    // 放一条内存消息,验证 remove 会清掉
+    messagesStore.append({ problemId: created.id, role: 'assistant', kind: 'text', content: 'hi', ts: 1 });
+    assert.equal(messagesStore.size(created.id), 1);
+
+    const result = await problemService.remove(created.id);
+    assert.equal(result.deleted, true);
+    assert.equal(result.id, created.id);
+    // 磁盘目录已删
+    assert.equal(existsSync(created.cwd), false);
+    // DB 行已删
+    assert.equal(onsiteProblemsDb.findById(created.id), null);
+    // 内存已清
+    assert.equal(messagesStore.size(created.id), 0);
+  });
+});
+
+test('remove 不存在的 id 返回 deleted:false(不抛错)', async () => {
+  await withIsolatedEnv(async () => {
+    const result = await problemService.remove('does-not-exist-anywhere');
+    assert.equal(result.deleted, false);
+    assert.equal(result.id, 'does-not-exist-anywhere');
+  });
+});
+
+test('remove 删除后子表(file/audit)经 ON DELETE CASCADE 一并清空', async () => {
+  await withIsolatedEnv(async () => {
+    const { onsiteFilesDb } = await import('@/modules/database/repositories/onsite-files.db.js');
+    const { onsiteStateAuditDb } = await import('@/modules/database/repositories/onsite-state-audit.db.js');
+
+    const created = await problemService.create({
+      customer: '山西公安',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '级联删除测试占位描述',
+    });
+    // 造子表数据:一条 file + 一条 audit
+    onsiteFilesDb.insert({
+      id: 'f-1',
+      problem_id: created.id,
+      original_name: 'log.zip',
+      stored_path: '/tmp/log.zip',
+      size: 10,
+      kind: 'log',
+      unpacked_dir: null,
+    });
+    onsiteStateAuditDb.append({
+      problem_id: created.id,
+      from_status: null,
+      to_status: 'pending_info',
+      reason: '初始创建占位',
+      actor_id: null,
+    });
+    assert.equal(onsiteFilesDb.findByProblemId(created.id).length, 1);
+    assert.equal(onsiteStateAuditDb.listByProblemId(created.id).length, 1);
+
+    await problemService.remove(created.id);
+
+    // 子表经 CASCADE 清空
+    assert.equal(onsiteFilesDb.findByProblemId(created.id).length, 0);
+    assert.equal(onsiteStateAuditDb.listByProblemId(created.id).length, 0);
+  });
+});

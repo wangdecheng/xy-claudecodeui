@@ -460,6 +460,71 @@ test('GET /api/onsite/problems/:id/files 返 200 + file 数组', async () => {
 });
 
 // ---------------------------------------------------------------------------
+// DELETE /api/onsite/problems/:id
+// ---------------------------------------------------------------------------
+
+test('DELETE 存在的 problem -> 200 + 磁盘目录删除 + DB 行消失 + 子表级联 + 广播 problems:changed', async () => {
+  await withIsolatedEnv(async () => {
+    const { problemService } = await import('../problem.service.js');
+    const { onsiteFilesDb } = await import('@/modules/database/repositories/onsite-files.db.js');
+    const { onsiteProblemsDb } = await import('@/modules/database/repositories/onsite-problems.db.js');
+    const { existsSync } = await import('node:fs');
+
+    const created = await problemService.create({
+      customer: '山西公安',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '待删除占位描述',
+    });
+    onsiteFilesDb.insert({
+      id: 'f-1',
+      problem_id: created.id,
+      original_name: 'log.zip',
+      stored_path: '/tmp/log.zip',
+      size: 10,
+      kind: 'log',
+      unpacked_dir: null,
+    });
+
+    const received: Array<{ type: string }> = [];
+    const sub = { send: (e: { type: string }) => received.push(e) };
+    const off = onsiteBroadcast.subscribe(sub);
+
+    try {
+      const app = buildApp();
+      const response = await request(app).delete(`/api/onsite/problems/${encodeURIComponent(created.id)}`);
+
+      assert.equal(response.status, 200);
+      assert.equal(response.body.id, created.id);
+      assert.equal(response.body.deleted, true);
+      // 磁盘目录已删
+      assert.equal(existsSync(created.cwd), false);
+      // DB 行已删
+      assert.equal(onsiteProblemsDb.findById(created.id), null);
+      // 子表经 CASCADE 清空
+      assert.equal(onsiteFilesDb.findByProblemId(created.id).length, 0);
+      // 广播 problems:changed
+      assert.equal(received.length, 1, '应收到一次 problems:changed 广播');
+      assert.equal(received[0]!.type, 'problems:changed');
+    } finally {
+      off();
+    }
+  });
+});
+
+test('DELETE 不存在的 id 返 404', async () => {
+  await withIsolatedEnv(async () => {
+    const app = buildApp();
+    const response = await request(app).delete('/api/onsite/problems/does-not-exist');
+
+    assert.equal(response.status, 404);
+    assert.match(`${response.body.error || ''} ${response.body.message || ''}`, /not found/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // 401 — 所有端点需 auth
 // ---------------------------------------------------------------------------
 
@@ -486,5 +551,8 @@ test('所有端点需 auth (401 without token)', async () => {
 
     const files = await request(app).get('/api/onsite/problems/foo/files');
     assert.equal(files.status, 401);
+
+    const del = await request(app).delete('/api/onsite/problems/foo');
+    assert.equal(del.status, 401);
   });
 });

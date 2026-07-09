@@ -1,0 +1,34 @@
+# .spec-superflow.yaml - lightweight state machine (onsite-history-delete)
+# Derived data. Always rebuildable from artifacts. Lost/corrupt -> fall back to content-level detection.
+
+# === Core state ===
+state: closing
+workflow: hotfix
+
+# === Execution progress ===
+execution_mode: sdd
+batches_completed: 1
+test_result: pass (新增 5 测试全绿:remove 3 + DELETE 2;401 测试加 DELETE 断言;未引入新类型错误)
+
+# === Metadata ===
+change_name: onsite-history-delete
+last_transition: 2026-07-09T00:00:00.000Z
+last_transition_from: executing
+last_transition_to: closing
+
+# === Decision points ===
+dp_0_decisions: "轻量快速路径(hotfix) + 先草拟契约评审;意图:问题列表删除功能,清理磁盘+DB(含级联子表)+内存缓冲+广播 problems:changed 刷新"
+dp_0_confirmed: true
+dp_0_timestamp: 2026-07-09T00:00:00.000Z
+
+dp_3_result: "approved: Hotfix 最小契约(意图+9任务+DP-3门);确认方式 window.confirm 原生弹窗;物理删除整个目录;2026-07-09 批准"
+dp_3_timestamp: 2026-07-09T00:00:00.000Z
+
+dp_4_result: "sdd: 先写后端测试(Red)->实现 DB/service/路由(Green)->前端 store/UI/i18n->运行测试验证"
+dp_4_timestamp: 2026-07-09T00:00:00.000Z
+
+dp_6_result: "conditional: 5 新测试全绿(DELETE 200/404 + remove 3);git stash 反向验证证实 5 个失败 (3 PATCH + 2 status enum) 全部 pre-existing,本 change 引入 0 回归;2 项 skip (RT-1 单元已覆盖 + RG-1 已知 pre-existing);3 测试文件汇总 routes 15/3 fail + service 15/2 fail + db 9/0 fail;5 pre-existing 失败已与本 change 解耦,建议后续单独修复 (状态枚举默认值不一致 + PATCH 状态机 200/409 反向)"
+dp_6_timestamp: 2026-07-09T06:30:00.000Z
+
+dp_7_result: "confirmed: onsite-history-delete 9/9 任务全完,5 新测试全绿,11 文件改动归档 (10 个属本 change + 1 个 config 附带),未引入回归;5 pre-existing 失败已知,与本 change 无因果;DP-0/3/4/6 全过,verification 16/0/2,release-ready"
+dp_7_timestamp: 2026-07-09T06:30:00.000Z

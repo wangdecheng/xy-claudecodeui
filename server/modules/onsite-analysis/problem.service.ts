@@ -14,12 +14,13 @@
  */
 
 import { existsSync } from 'node:fs';
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
 import { getConfig } from './config.service.js';
+import { messagesStore } from './messages-store.service.js';
 
 export class CwdEscapeError extends Error {
   readonly code = 'CWD_ESCAPE';
@@ -359,6 +360,31 @@ export const problemService = {
       description,
       created_at,
     };
+  },
+
+  /**
+   * 物理删除一条 problem:磁盘目录(含 problem.json + 解压日志)+ DB 主表行
+   * (子表 onsite_files / onsite_state_audit / onsite_discipline_log 经
+   * ON DELETE CASCADE 一并清空)+ 内存 ring buffer。
+   *
+   * 不存在 -> 返回 { deleted: false }(路由层翻译成 404,不抛错)。
+   * cwd 越界 -> assertCwdUnderRoot 抛 CwdEscapeError(防御性二次校验)。
+   * 删除不可逆,前端用 window.confirm 二次确认。
+   */
+  async remove(id: string): Promise<{ id: string; deleted: boolean }> {
+    const record = await this.getById(id);
+    if (!record) {
+      return { id, deleted: false };
+    }
+    // 安全校验:cwd 必须在 ONSITE_ROOT 下,杜绝 path traversal / 误删其他路径
+    assertCwdUnderRoot(record.cwd);
+    // 删磁盘目录(含 problem.json + 解压日志)
+    await rm(record.cwd, { recursive: true, force: true });
+    // 删 DB 主表行(子表经 ON DELETE CASCADE 一并清空)
+    onsiteProblemsDb.deleteById(id);
+    // 清内存 ring buffer
+    messagesStore.clear(id);
+    return { id, deleted: true };
   },
 };
 

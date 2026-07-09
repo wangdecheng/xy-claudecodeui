@@ -102,6 +102,13 @@ export interface OnsiteStoreActions {
    * 404(unknown problem)→ 返回空数组,不做错误 toast。
    */
   loadMessages: (id: string) => Promise<OnsiteStoredMessage[]>;
+  /**
+   * DELETE /api/onsite/problems/:id - 物理删除一条 problem(磁盘目录 + DB
+   * 含级联子表 + 内存 ring buffer)。成功后本地移除该条、清
+   * files/uploading/pendingInitialPrompt 缓存,若删的是当前选中则清空
+   * currentProblemId。返回是否成功(失败时写 lastError)。
+   */
+  deleteProblem: (id: string) => Promise<boolean>;
 }
 
 export interface OnsiteStoreSelectors {
@@ -399,6 +406,53 @@ export function useOnsiteStore(): OnsiteStore {
     [notify],
   );
 
+  const deleteProblem = useCallback(
+    async (id: string): Promise<boolean> => {
+      try {
+        const res = await authenticatedFetch(
+          `/api/onsite/problems/${encodeURIComponent(id)}`,
+          { method: 'DELETE' },
+        );
+        if (!res.ok) {
+          const text = await res.text().catch(() => '');
+          stateRef.current.lastError = `deleteProblem failed: HTTP ${res.status} ${text}`;
+          notify();
+          return false;
+        }
+        // 本地移除(WS 也会推 problems:changed,这里乐观更新让 UI 即时响应)
+        stateRef.current.problems = stateRef.current.problems.filter((p) => p.id !== id);
+        // 清相关缓存(files / pendingInitialPrompt / uploading)
+        if (stateRef.current.files[id]) {
+          const nextFiles = { ...stateRef.current.files };
+          delete nextFiles[id];
+          stateRef.current.files = nextFiles;
+        }
+        if (stateRef.current.pendingInitialPrompt[id]) {
+          const nextPrompts = { ...stateRef.current.pendingInitialPrompt };
+          delete nextPrompts[id];
+          stateRef.current.pendingInitialPrompt = nextPrompts;
+        }
+        if (stateRef.current.uploading[id] !== undefined) {
+          const nextUploading = { ...stateRef.current.uploading };
+          delete nextUploading[id];
+          stateRef.current.uploading = nextUploading;
+        }
+        // 若删的是当前选中,清空选中(调用方据此导航回 /onsite)
+        if (stateRef.current.currentProblemId === id) {
+          stateRef.current.currentProblemId = null;
+        }
+        stateRef.current.lastError = null;
+        notify();
+        return true;
+      } catch (err: unknown) {
+        stateRef.current.lastError = err instanceof Error ? err.message : String(err);
+        notify();
+        return false;
+      }
+    },
+    [notify],
+  );
+
   // ─── selectors (snapshot reads) ────────────────────────────────────────
 
   /** getProblem — returns the matching record or undefined. */
@@ -448,6 +502,7 @@ export function useOnsiteStore(): OnsiteStore {
       uploadFiles,
       loadFiles,
       loadMessages,
+      deleteProblem,
       getProblem,
       getUploadProgress,
       getAnyUploading,
@@ -464,6 +519,7 @@ export function useOnsiteStore(): OnsiteStore {
     uploadFiles,
     loadFiles,
     loadMessages,
+    deleteProblem,
     setInitialPrompt,
     takeInitialPrompt,
     getProblem,

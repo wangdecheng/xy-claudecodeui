@@ -10,8 +10,10 @@
  * Click → selectProblem(id) + navigate to /onsite/:id
  */
 
-import { useMemo } from 'react';
+import { useMemo, useState, type KeyboardEvent, type MouseEvent } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { Trash2 } from 'lucide-react';
+import { useTranslation } from 'react-i18next';
 
 import type { ProblemListItem } from '@shared/onsite-types';
 
@@ -53,8 +55,10 @@ function cwdShortName(cwd: string): string {
 }
 
 export default function IssueListItem({ problem, active }: IssueListItemProps) {
+  const { t } = useTranslation(['onsite', 'common']);
   const navigate = useNavigate();
-  const selectProblem = useOnsiteStore().selectProblem;
+  const { selectProblem, deleteProblem, currentProblemId } = useOnsiteStore();
+  const [deleting, setDeleting] = useState(false);
   const relative = useMemo(
     () => formatRelative(problem.created_at, problem.cwd),
     [problem.created_at, problem.cwd],
@@ -66,21 +70,61 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
     navigate(`/onsite/${encodeURIComponent(problem.id)}`);
   };
 
+  const handleKeyDown = (e: KeyboardEvent) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleClick();
+    }
+  };
+
+  // 删除:stopPropagation 不触发导航 -> window.confirm 二次确认 -> deleteProblem
+  // -> 若删的是当前路由的 problem,导航回 /onsite(无选中态)
+  const handleDelete = async (e: MouseEvent) => {
+    e.stopPropagation();
+    if (deleting) return;
+    const wasCurrent = problem.id === currentProblemId;
+    const ok = window.confirm(
+      t('onsite:delete.confirm', {
+        defaultValue: '删除该分析历史？将一并移除磁盘日志与数据库记录，不可恢复。',
+      }),
+    );
+    if (!ok) return;
+    setDeleting(true);
+    const success = await deleteProblem(problem.id);
+    setDeleting(false);
+    if (success && wasCurrent) {
+      navigate('/onsite');
+    }
+  };
+
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={handleClick}
+      onKeyDown={handleKeyDown}
       data-testid="onsite-issue-item"
       data-problem-id={problem.id}
       data-active={active ? 'true' : 'false'}
       className={cn(
-        'block w-full rounded-md border border-transparent px-3 py-2 text-left transition-colors',
+        'group relative block w-full cursor-pointer rounded-md border border-transparent px-3 py-2 text-left transition-colors',
         active
           ? 'border-primary/30 bg-primary/5'
           : 'hover:border-border hover:bg-muted/50',
       )}
     >
-      <div className="flex items-center justify-between gap-2">
+      <button
+        type="button"
+        onClick={handleDelete}
+        disabled={deleting}
+        data-testid="onsite-issue-delete"
+        aria-label={t('onsite:delete.button', { defaultValue: '删除' })}
+        title={t('onsite:delete.button', { defaultValue: '删除' })}
+        className="absolute right-1 top-1 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus:opacity-100 group-hover:opacity-100 focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+      <div className="flex items-center justify-between gap-2 pr-5">
         <span className="truncate text-sm font-medium text-foreground" title={problem.customer}>
           {problem.customer}
         </span>
@@ -98,6 +142,6 @@ export default function IssueListItem({ problem, active }: IssueListItemProps) {
         </div>
         <span>{relative}</span>
       </div>
-    </button>
+    </div>
   );
 }
