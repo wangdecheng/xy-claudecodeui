@@ -96,8 +96,9 @@ router.get(
 
 router.get(
   '/archived',
-  asyncHandler(async (_req, res) => {
-    const projects = await getArchivedProjectsWithSessions();
+  asyncHandler(async (req, res) => {
+    const userId = readReqUserId(req);
+    const projects = await getArchivedProjectsWithSessions({ userId });
     res.json(createApiSuccessResponse({ projects }));
   }),
 );

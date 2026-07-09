@@ -42,8 +42,11 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans Cursor chats and upserts discovered sessions into DB.
+   *
+   * `userId` 必传（见 `IProviderSessionSynchronizer` 接口注释），透传
+   * 到底层 `createSession` 绑定归属。
    */
-  async synchronize(since?: Date): Promise<number> {
+  async synchronize(since: Date | undefined, userId: number): Promise<number> {
     const projectsDir = path.join(this.cursorHome, 'projects');
 
     let processed = 0;
@@ -61,6 +64,7 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
+        userId,
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
@@ -74,8 +78,10 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Parses and upserts one Cursor session JSONL file.
+   *
+   * `userId` 必传：watcher 解析后透传到 `createSession`。
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string, userId: number): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
       return null;
     }
@@ -90,6 +96,7 @@ export class CursorSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
+      userId,
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,

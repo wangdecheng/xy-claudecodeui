@@ -27,8 +27,11 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans ~/.codex/sessions and upserts discovered sessions into DB.
+   *
+   * `userId` 必传（见 `IProviderSessionSynchronizer` 接口注释），透传
+   * 到底层 `createSession` 绑定归属。
    */
-  async synchronize(since?: Date): Promise<number> {
+  async synchronize(since: Date | undefined, userId: number): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.codexHome, 'session_index.jsonl'), 'id', 'thread_name');
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.codexHome, 'sessions'),
@@ -57,6 +60,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
+        userId,
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
@@ -70,8 +74,10 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Parses and upserts one Codex session JSONL file.
+   *
+   * `userId` 必传：watcher 解析后透传到 `createSession`。
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string, userId: number): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
       return null;
     }
@@ -87,6 +93,7 @@ export class CodexSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
+      userId,
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,

@@ -35,8 +35,11 @@ export class GeminiSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans Gemini legacy JSON and new JSONL artifacts and upserts sessions into DB.
+   *
+   * `userId` 必传（见 `IProviderSessionSynchronizer` 接口注释），透传
+   * 到底层 `createSession` 绑定归属。
    */
-  async synchronize(since?: Date): Promise<number> {
+  async synchronize(since: Date | undefined, userId: number): Promise<number> {
     const projectHashLookup = this.buildProjectHashLookup();
 
     // const legacySessionFiles = await findFilesRecursivelyCreatedAfter(
@@ -91,6 +94,7 @@ export class GeminiSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
+        userId,
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
@@ -104,8 +108,10 @@ export class GeminiSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Parses and upserts one Gemini legacy JSON or JSONL artifact.
+   *
+   * `userId` 必传：watcher 解析后透传到 `createSession`。
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string, userId: number): Promise<string | null> {
     if (!filePath.endsWith('.json') && !filePath.endsWith('.jsonl')) {
       return null;
     }
@@ -126,6 +132,7 @@ export class GeminiSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
+      userId,
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,

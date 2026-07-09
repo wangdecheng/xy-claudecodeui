@@ -32,7 +32,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
 test('disk-discovered sessions are keyed by the provider id for both columns', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createSession('provider-abc', 'claude', '/workspace/demo', 'From Disk');
+    sessionsDb.createSession('provider-abc', 'claude', '/workspace/demo', 1, 'From Disk', undefined, undefined, null);
 
     const row = sessionsDb.getSessionById('provider-abc');
     assert.equal(row?.session_id, 'provider-abc');
@@ -45,7 +45,7 @@ test('disk-discovered sessions are keyed by the provider id for both columns', a
 
 test('app sessions get the provider id assigned without creating a duplicate row', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-id-1', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-id-1', 'claude', '/workspace/demo', 1);
     sessionsDb.assignProviderSessionId('app-id-1', 'provider-xyz');
 
     // A later synchronizer pass that discovers the transcript on disk must
@@ -54,6 +54,7 @@ test('app sessions get the provider id assigned without creating a duplicate row
       'provider-xyz',
       'claude',
       '/workspace/demo',
+      1,
       'Synced Name',
       undefined,
       undefined,
@@ -71,7 +72,7 @@ test('app sessions get the provider id assigned without creating a duplicate row
 
 test('assignProviderSessionId merges a watcher-created duplicate into the app row', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-id-2', 'codex', '/workspace/demo');
+    sessionsDb.createAppSession('app-id-2', 'codex', '/workspace/demo', 1);
 
     // Simulate the race: the filesystem watcher indexed the provider
     // transcript before the runtime announced its session id to the gateway.
@@ -79,6 +80,7 @@ test('assignProviderSessionId merges a watcher-created duplicate into the app ro
       'provider-race',
       'codex',
       '/workspace/demo',
+      1,
       'Watcher Name',
       undefined,
       undefined,
@@ -100,7 +102,7 @@ test('assignProviderSessionId merges a watcher-created duplicate into the app ro
 
 test('legacy provider-keyed rows stay resolvable through both lookups', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createSession('legacy-1', 'gemini', '/workspace/demo');
+    sessionsDb.createSession('legacy-1', 'gemini', '/workspace/demo', 1, undefined, undefined, undefined, null);
 
     assert.equal(sessionsDb.getSessionById('legacy-1')?.provider, 'gemini');
     assert.equal(sessionsDb.getSessionByProviderSessionId('legacy-1')?.session_id, 'legacy-1');

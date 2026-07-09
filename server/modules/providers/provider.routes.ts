@@ -560,6 +560,13 @@ router.post(
     const provider = parseProvider(body.provider);
     const projectPath = typeof body.projectPath === 'string' ? body.projectPath : '';
     const userId = readReqUserId(req);
+    if (userId == null) {
+      // userId 为 null 通常意味着鉴权中间件漏挂/被绕过,不允许创建无主 session。
+      throw new AppError('Authenticated user is required to start a new session.', {
+        code: 'AUTHENTICATION_REQUIRED',
+        statusCode: 401,
+      });
+    }
     const result = sessionsService.createAppSession(provider, projectPath, userId);
     res.status(201).json(createApiSuccessResponse(result));
   }),

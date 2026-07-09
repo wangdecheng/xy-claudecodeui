@@ -35,25 +35,30 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
 
   /**
    * Scans OpenCode's shared opencode.db and upserts active sessions into DB.
+   *
+   * `userId` 必传（见 `IProviderSessionSynchronizer` 接口注释），透传
+   * 到 `synchronizeRows` → `upsertSession` → `createSession` 绑定归属。
    */
-  async synchronize(since?: Date): Promise<number> {
-    const result = this.synchronizeRows(since);
+  async synchronize(since: Date | undefined, userId: number): Promise<number> {
+    const result = this.synchronizeRows(since, undefined, userId);
     return result.processed;
   }
 
   /**
    * Handles watcher changes for opencode.db.
+   *
+   * `userId` 必传：watcher 解析后透传到 `createSession`。
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string, userId: number): Promise<string | null> {
     if (path.basename(filePath) !== 'opencode.db') {
       return null;
     }
 
-    const result = this.synchronizeRows(undefined, 1);
+    const result = this.synchronizeRows(undefined, 1, userId);
     return result.firstSessionId;
   }
 
-  private synchronizeRows(since?: Date, limit?: number): SynchronizeRowsResult {
+  private synchronizeRows(since: Date | undefined, limit: number | undefined, userId: number): SynchronizeRowsResult {
     const dbPath = getOpenCodeDatabasePath();
     if (!fsSync.existsSync(dbPath)) {
       return { processed: 0, firstSessionId: null };
@@ -83,7 +88,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       let processed = 0;
       let firstSessionId: string | null = null;
       for (const row of rows) {
-        const indexedSessionId = this.upsertSession(db, row);
+        const indexedSessionId = this.upsertSession(db, row, userId);
         if (!indexedSessionId) {
           continue;
         }
@@ -104,7 +109,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
     }
   }
 
-  private upsertSession(db: Database.Database, row: OpenCodeSessionRow): string | null {
+  private upsertSession(db: Database.Database, row: OpenCodeSessionRow, userId: number): string | null {
     const sessionId = readOptionalString(row.id);
     const projectPath = readOptionalString(row.directory) ?? readOptionalString(row.worktree);
     if (!sessionId || !projectPath) {
@@ -140,6 +145,7 @@ export class OpenCodeSessionSynchronizer implements IProviderSessionSynchronizer
       sessionId,
       this.provider,
       projectPath,
+      userId,
       normalizeSessionName(nextName, fallbackTitle),
       normalizeProviderTimestamp(row.time_created),
       normalizeProviderTimestamp(row.time_updated ?? row.time_created),

@@ -32,8 +32,8 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
 test('session archive queries hide archived rows from active project views', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createSession('session-active', 'claude', '/workspace/demo-project', 'Active Session');
-    sessionsDb.createSession('session-archived', 'claude', '/workspace/demo-project', 'Archived Session');
+    sessionsDb.createSession('session-active', 'claude', '/workspace/demo-project', 1, 'Active Session', undefined, undefined, null);
+    sessionsDb.createSession('session-archived', 'claude', '/workspace/demo-project', 1, 'Archived Session', undefined, undefined, null);
     sessionsDb.updateSessionIsArchived('session-archived', true);
 
     const activeSessions = sessionsDb.getAllSessions();
@@ -54,10 +54,10 @@ test('session archive queries hide archived rows from active project views', asy
 
 test('createSession reactivates archived rows when the session becomes active again', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'First Name');
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 1, 'First Name', undefined, undefined, null);
     sessionsDb.updateSessionIsArchived('session-reused', true);
 
-    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 'Updated Name');
+    sessionsDb.createSession('session-reused', 'claude', '/workspace/demo-project', 1, 'Updated Name', undefined, undefined, null);
 
     const activeSessions = sessionsDb.getAllSessions();
     const archivedSessions = sessionsDb.getArchivedSessions();
@@ -73,7 +73,7 @@ test('createSession reactivates archived rows when the session becomes active ag
 
 test('repository reads normalize SQLite UTC timestamps to ISO strings', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('session-timezone', 'claude', '/workspace/demo-project');
+    sessionsDb.createAppSession('session-timezone', 'claude', '/workspace/demo-project', 1);
 
     const row = sessionsDb.getSessionById('session-timezone');
     assert.ok(row?.created_at.endsWith('Z'));

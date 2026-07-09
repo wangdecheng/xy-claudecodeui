@@ -47,7 +47,7 @@ async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promis
 
 test('live events are remapped to the app session id and sequenced', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-1', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-1', 'claude', '/workspace/demo', 1);
     const connection = new FakeConnection();
     const run = chatRunRegistry.startRun({
       appSessionId: 'app-run-1',
@@ -71,7 +71,7 @@ test('live events are remapped to the app session id and sequenced', async () =>
 
 test('session_created is swallowed and persisted as the provider-id mapping', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-2', 'cursor', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-2', 'cursor', '/workspace/demo', 1);
     const connection = new FakeConnection();
     connectedClients.add(connection as never);
     const run = chatRunRegistry.startRun({
@@ -103,7 +103,7 @@ test('session_created is swallowed and persisted as the provider-id mapping', as
 
 test('complete marks the run finished and duplicate completes are dropped', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-3', 'codex', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-3', 'codex', '/workspace/demo', 1);
     const connection = new FakeConnection();
     const run = chatRunRegistry.startRun({
       appSessionId: 'app-run-3',
@@ -131,8 +131,8 @@ test('complete marks the run finished and duplicate completes are dropped', asyn
 
 test('listRunningRuns returns only currently running app sessions', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-7', 'claude', '/workspace/demo');
-    sessionsDb.createAppSession('app-run-8', 'codex', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-7', 'claude', '/workspace/demo', 1);
+    sessionsDb.createAppSession('app-run-8', 'codex', '/workspace/demo', 1);
     const connection = new FakeConnection();
 
     const completedRun = chatRunRegistry.startRun({
@@ -163,7 +163,7 @@ test('listRunningRuns returns only currently running app sessions', async () => 
 
 test('replayEvents returns only events after the requested seq', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-4', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-4', 'claude', '/workspace/demo', 1);
     const connection = new FakeConnection();
     const run = chatRunRegistry.startRun({
       appSessionId: 'app-run-4',
@@ -186,7 +186,7 @@ test('replayEvents returns only events after the requested seq', async () => {
 
 test('attachConnection reroutes the live stream to a new socket', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-5', 'gemini', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-5', 'gemini', '/workspace/demo', 1);
     const firstConnection = new FakeConnection();
     const run = chatRunRegistry.startRun({
       appSessionId: 'app-run-5',
@@ -210,7 +210,7 @@ test('attachConnection reroutes the live stream to a new socket', async () => {
 
 test('startRun rejects a second concurrent run for the same session', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('app-run-6', 'opencode', '/workspace/demo');
+    sessionsDb.createAppSession('app-run-6', 'opencode', '/workspace/demo', 1);
     const connection = new FakeConnection();
     const first = chatRunRegistry.startRun({
       appSessionId: 'app-run-6',

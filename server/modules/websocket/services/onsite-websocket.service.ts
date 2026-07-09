@@ -23,9 +23,8 @@ import type { WebSocket, WebSocketServer } from 'ws';
 
 import { assertCwdUnderRoot, resolveOnsiteRoot } from '@/modules/onsite-analysis/problem.service.js';
 import { messagesStore, type StoredMessage } from '@/modules/onsite-analysis/messages-store.service.js';
-import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { sessionsDb, userDb } from '@/modules/database/index.js';
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
-
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
 export const ONSITE_HELLO_KIND = 'onsite' as const;
@@ -122,12 +121,41 @@ type OnsiteWebSocket = WebSocket & {
 };
 
 /**
+ * 解析 onsite hello 帧里的 userId 字段。
+ *
+ * - 客户端显式传数字串 → 转 number；
+ * - 缺失 / null / 不可解析 → 兜底取 `usersDb.getFirstUser().id`（平台模式
+ *   的"系统用户"概念）；
+ * - 数据库完全没有任何 active 用户 → 抛错（异常分支，正常启动后不会到
+ *   这里）。
+ */
+function parseHelloUserId(rawUserId: string | null): number {
+  if (rawUserId !== null) {
+    const parsed = Number(rawUserId);
+    if (Number.isInteger(parsed) && parsed > 0) {
+      return parsed;
+    }
+  }
+  const firstUser = userDb.getFirstUser();
+  if (!firstUser) {
+    throw new Error('Onsite hello: no active user available to attribute new onsite session.');
+  }
+  return firstUser.id;
+}
+
+/**
  * 幂等地确保某个 onsite problem 的 session 行存在(kind='onsite')。
  * chat.send 用 sessionId=problemId 查 sessionsDb;缺行则 SESSION_NOT_FOUND。
  * 元数据(branch/iteration/database)从 onsite_problems 表补齐,取不到就留空/NULL
  * (denormalized 副本,不影响 spawn — spawn 只用 project_path/cwd)。全同步,无竞态。
+ *
+ * `userId` 必传（断言见 sessions.db 的 assertSessionUserId）：来自 onsite
+ * hello frame 的 userId 字段（已通过 validateOnsiteHelloFrame 类型校验）。
+ * 多用户平台模式下 hello 帧允许 userId=null,但 createOnsiteSession
+ * 不允许 null,这里强制兜底从 usersDb.getFirstUser() 解析。COALESCE
+ * 语义保留：若该行已存在,userId 不覆盖归属。
  */
-function ensureOnsiteSession(problemId: string, cwd: string): void {
+function ensureOnsiteSession(problemId: string, cwd: string, userId: number): void {
   try {
     // session_id 可能在首次 run 后被 assignProviderSessionId 从
     // problem.id 更新为 UUID。先按 problemId 查,查不到再按 cwd 查。
@@ -142,7 +170,7 @@ function ensureOnsiteSession(problemId: string, cwd: string): void {
       third_bridge_branch: rec?.third_bridge_branch ?? null,
       iteration: rec?.iteration ?? '',
       database: rec?.database ?? '',
-    });
+    }, userId);
   } catch (err: unknown) {
     // 并发/重连下可能已被另一帧创建;不阻断连接,chat.send 会再次校验。
     console.warn(
@@ -277,7 +305,12 @@ export const onsiteWebSocketService = {
           // hello 验证通过后,确保该 problem 对应的 onsite session 行存在。
           // 否则后续 chat.send(sessionId=problemId)会因 SESSION_NOT_FOUND 静默失败
           // (卡片死电路的第三处根因:onsite 会话从未被创建)。同步、幂等。
-          ensureOnsiteSession(validation.payload.problemId, validation.payload.cwd);
+          //
+          // userId 解析顺序：hello 帧显式传 → 平台首用户兜底。assertSessionUserId
+          // 在 createOnsiteSession 入口再校验一次,这里只是为了不让 null 漏到
+          // repository 守卫层（见 sessions.db 的 InvalidSessionUserIdError）。
+          const helloUserId = parseHelloUserId(validation.payload.userId);
+          ensureOnsiteSession(validation.payload.problemId, validation.payload.cwd, helloUserId);
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           sendProtocolError('HELLO_INTERNAL', message);

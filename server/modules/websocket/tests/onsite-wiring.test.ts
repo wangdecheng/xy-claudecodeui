@@ -80,7 +80,7 @@ async function withIsolatedEnv(runTest: () => void | Promise<void>): Promise<voi
 
 test('startRun({kind:onsite}) attaches the 3 middlewares to writer.ws', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-wire-onsite', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-wire-onsite', 'claude', '/workspace/demo', 1);
 
     const connection = new FakeConnection();
     // Pre-mark as if onsite hello was already verified
@@ -120,7 +120,7 @@ test('startRun({kind:onsite}) attaches the 3 middlewares to writer.ws', async ()
 
 test('startRun({kind:chat}) does NOT attach middlewares (chat path unchanged)', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-wire-chat', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-wire-chat', 'claude', '/workspace/demo', 1);
 
     const connection = new FakeConnection();
 
@@ -157,7 +157,7 @@ test('startRun({kind:chat}) does NOT attach middlewares (chat path unchanged)', 
 
 test('startRun({kind:onsite}) attaches write-protection middleware (tool_result triggers flag)', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-wire-wp', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-wire-wp', 'claude', '/workspace/demo', 1);
     const connection = new FakeConnection();
     connection.kind = 'onsite';
 
@@ -190,7 +190,7 @@ test('startRun({kind:onsite}) attaches write-protection middleware (tool_result 
 
 test('attachConnection on an onsite run re-attaches middlewares to new ws', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-wire-reconnect', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-wire-reconnect', 'claude', '/workspace/demo', 1);
 
     const firstConnection = new FakeConnection();
     firstConnection.kind = 'onsite';

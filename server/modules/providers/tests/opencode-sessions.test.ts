@@ -255,7 +255,7 @@ test('OpenCode session synchronizer indexes sqlite sessions without deletable tr
     await createOpenCodeDatabase(tempRoot, workspacePath);
     await withIsolatedDatabase(() => {
       const synchronizer = new OpenCodeSessionSynchronizer();
-      const processed = synchronizer.synchronize();
+      const processed = synchronizer.synchronize(undefined, 1);
 
       return Promise.resolve(processed).then((count) => {
         assert.equal(count, 1);
@@ -281,11 +281,11 @@ test('OpenCode session synchronizer returns the app session id once provider map
   try {
     await createOpenCodeDatabase(tempRoot, workspacePath);
     await withIsolatedDatabase(() => {
-      sessionsDb.createAppSession('app-session-1', 'opencode', workspacePath);
+      sessionsDb.createAppSession('app-session-1', 'opencode', workspacePath, 1);
       sessionsDb.assignProviderSessionId('app-session-1', 'open-session-1');
 
       const synchronizer = new OpenCodeSessionSynchronizer();
-      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db')).then((sessionId) => {
+      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'), 1).then((sessionId) => {
         assert.equal(sessionId, 'app-session-1');
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-1')?.provider_session_id, 'open-session-1');
@@ -306,10 +306,10 @@ test('OpenCode session synchronizer adopts the pending app session before watche
   try {
     await createOpenCodeDatabase(tempRoot, workspacePath);
     await withIsolatedDatabase(() => {
-      sessionsDb.createAppSession('app-session-race', 'opencode', workspacePath);
+      sessionsDb.createAppSession('app-session-race', 'opencode', workspacePath, 1);
 
       const synchronizer = new OpenCodeSessionSynchronizer();
-      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db')).then((sessionId) => {
+      return synchronizer.synchronizeFile(path.join(tempRoot, '.local', 'share', 'opencode', 'opencode.db'), 1).then((sessionId) => {
         assert.equal(sessionId, 'app-session-race');
         assert.equal(sessionsDb.getAllSessions().length, 1);
         assert.equal(sessionsDb.getSessionById('app-session-race')?.provider_session_id, 'open-session-1');

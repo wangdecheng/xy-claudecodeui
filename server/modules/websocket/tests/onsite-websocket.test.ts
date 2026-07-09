@@ -142,7 +142,7 @@ test('validateOnsiteHelloFrame: cwd relative 路径会被拼到 root(合法)', (
 
 test('chatRunRegistry.startRun 默认 kind = chat', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-kind-1', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-kind-1', 'claude', '/workspace/demo', 1);
     chatRunRegistry.startRun({
       appSessionId: 'app-kind-1',
       provider: 'claude',
@@ -156,7 +156,7 @@ test('chatRunRegistry.startRun 默认 kind = chat', async () => {
 
 test('chatRunRegistry.startRun 显式 kind=onsite 写入', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-kind-2', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-kind-2', 'claude', '/workspace/demo', 1);
     chatRunRegistry.startRun({
       appSessionId: 'app-kind-2',
       provider: 'claude',
@@ -175,7 +175,7 @@ test('chatRunRegistry.getRunKind 未知 sessionId 返 undefined', () => {
 
 test('chatRunRegistry.startRun 重复 appSessionId(运行中) 返 null,不变 kind', async () => {
   await withIsolatedEnv(() => {
-    sessionsDb.createAppSession('app-kind-dup', 'claude', '/workspace/demo');
+    sessionsDb.createAppSession('app-kind-dup', 'claude', '/workspace/demo', 1);
     const first = chatRunRegistry.startRun({
       appSessionId: 'app-kind-dup',
       provider: 'claude',

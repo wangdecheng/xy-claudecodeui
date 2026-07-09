@@ -53,6 +53,57 @@ export function assertSessionKind(value: unknown): asserts value is SessionKind 
   }
 }
 
+// ---------------------------------------------------------------------------
+// user_id 必传守卫
+// ---------------------------------------------------------------------------
+//
+// `sessions.user_id` 列在 schema 里是 nullable 的（保留迁移前 NULL 旧数据的
+// "公开可见" 语义），但仓库层三个 create 函数（createSession / createAppSession /
+// createOnsiteSession）写入新行时**必须**绑定登录用户。文件系统同步器、HTTP
+// 路由、onsite WS 任何一条写入路径漏传 userId 都会让历史 session 全部
+// 变成 NULL，从而按 user_id 过滤时丢失——这就是 commit 7556c91 之后的
+// "历史 session 无法按 user_id 过滤" 根因。
+//
+// `assertSessionUserId` 与 `InvalidSessionUserIdError` 是对称于
+// `assertSessionKind` / `InvalidSessionKindError` 的实现：每个写入路径
+// 在最前面调用一次即可，TypeScript 上把 userId 标成必填参数只是
+// 编译期保险，runtime 仍需要这个守卫兜住 JS 侧 / 动态调用。
+//
+// COALESCE 语义保留：createSession 命中已有行时,旧 user_id 优先,新传
+// 进来的 userId 不覆盖。这防止"另一用户在 watcher 路径下重新 upsert
+// 同一行"时把归属偷走。
+
+export class InvalidSessionUserIdError extends Error {
+  readonly code = 'INVALID_SESSION_USER_ID';
+  readonly userId: unknown;
+  constructor(userId: unknown) {
+    super(
+      `Invalid session userId: ${JSON.stringify(userId)} (userId is required and must be coercible to a positive integer)`,
+    );
+    this.name = 'InvalidSessionUserIdError';
+    this.userId = userId;
+  }
+}
+
+/**
+ * Throws `InvalidSessionUserIdError` if `value` is not coercible to a
+ * positive integer. Used at the entry of every session-write helper so
+ * legacy NULL rows can stay in the table for backwards compatibility
+ * while new rows are guaranteed to be bound to a real user.
+ */
+export function assertSessionUserId(value: unknown): asserts value is number | string {
+  if (value === null || value === undefined) {
+    throw new InvalidSessionUserIdError(value);
+  }
+  if (typeof value !== 'number' && typeof value !== 'string') {
+    throw new InvalidSessionUserIdError(value);
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric) || !Number.isInteger(numeric) || numeric <= 0) {
+    throw new InvalidSessionUserIdError(value);
+  }
+}
+
 /**
  * Onsite-only session options. `cwd` is the customer-analysis working
  * directory inside the project; the other three are NULL-able so
@@ -142,18 +193,24 @@ export const sessionsDb = {
    * (with an app-allocated `session_id`) is updated in place once its
    * transcript shows up on disk, instead of producing a duplicate row.
    *
-   * `userId` 可选：HTTP 路由传入 req.user.id；文件系统观察者调用时不传（NULL）。
-   * NULL user_id 的会话对所有用户可见。
+   * `userId` 必传：HTTP 路由传 req.user.id，文件系统 watcher 用
+   * `usersDb.getFirstUser().id` 解析当前登录用户。任何调用方漏传
+   * 都会被 `assertSessionUserId` 拦截（参见本文件顶部 user_id 守卫
+   * 章节的注释），防止历史 session 因 user_id 为 NULL 而被按用户
+   * 过滤掉。
+   *
+   * COALESCE 语义：命中已有行时保留旧 `user_id`（不覆盖归属），
+   * 仅在新行写入时使用本次传入的 userId。
    */
   createSession(
     providerSessionId: string,
     provider: string,
     projectPath: string,
+    userId: number | string,
     customName?: string,
     createdAt?: string,
     updatedAt?: string,
     jsonlPath?: string | null,
-    userId?: number | string | null,
   ): string {
     const db = getConnection();
     // I-9 guard: chat is the historical default. We don't pass `kind` here
@@ -161,10 +218,11 @@ export const sessionsDb = {
     // instead we explicitly assert the intended kind so upgraded DBs
     // (without a CHECK constraint) still get the validation.
     assertSessionKind('chat');
+    assertSessionUserId(userId);
     const createdAtValue = normalizeTimestamp(createdAt);
     const updatedAtValue = normalizeTimestamp(updatedAt);
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
-    const normalizedUserId = userId != null ? Number(userId) : null;
+    const normalizedUserId = Number(userId);
 
     // First, ensure the project path is recorded in the projects table,
     // since it's a foreign key in the sessions table.
@@ -237,15 +295,21 @@ export const sessionsDb = {
    * `session_id` is the stable app-facing id, while `provider_session_id`
    * stays NULL until the provider runtime announces its own id and
    * `assignProviderSessionId` records the mapping.
+   *
+   * `userId` 必传（守卫见 assertSessionUserId）：来自 `req.user.id`，
+   * session 一旦创建就锁定归属用户，后续 chat.send / fetchHistory /
+   * delete / archive 都会用 `assertSessionOwnership` 校验当前用户
+   * 与归属一致。
    */
-  createAppSession(sessionId: string, provider: string, projectPath: string, userId?: number | string | null): string {
+  createAppSession(sessionId: string, provider: string, projectPath: string, userId: number | string): string {
     const db = getConnection();
     // I-9 guard: app-allocated sessions are always `kind='chat'` (the
     // historical chat path). Onsite sessions should use
     // `createOnsiteSession(...)` instead.
     assertSessionKind('chat');
+    assertSessionUserId(userId);
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
-    const normalizedUserId = userId != null ? Number(userId) : null;
+    const normalizedUserId = Number(userId);
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
@@ -267,18 +331,23 @@ export const sessionsDb = {
    * CHECK still reject stray values. Forwards-looking risk per review:
    * Batch 5.5 chat e2e will rely on this row existing alongside chat rows
    * to verify that `kind` filtering works at the registry layer.
+   *
+   * `userId` 必传（守卫见 assertSessionUserId）：onsite hello frame 的
+   * `userId` 字段在 websocket 入口已经过 `validateOnsiteHelloFrame` 校验
+   * 类型，service 层拿到后强制要求非空，禁止 NULL 行。
    */
   createOnsiteSession(
     sessionId: string,
     provider: string,
     projectPath: string,
     options: OnsiteSessionOptions,
-    userId?: number | string | null,
+    userId: number | string,
   ): string {
     assertSessionKind('onsite');
+    assertSessionUserId(userId);
     const db = getConnection();
     const normalizedProjectPath = normalizeProjectPathForProvider(provider, projectPath);
-    const normalizedUserId = userId != null ? Number(userId) : null;
+    const normalizedUserId = Number(userId);
 
     projectsDb.createProjectPath(normalizedProjectPath);
 
@@ -529,6 +598,40 @@ export const sessionsDb = {
       )
       .all(normalizedProjectPath) as SessionRow[];
 
+    return normalizeSessionRows(rows);
+  },
+
+  /**
+   * 按项目路径和用户过滤的会话查询（含归档）。
+   *
+   * 设计要点（与既有 `getSessionsByProjectPathAndUserId` 保持一致）：
+   * - `userId` 为 null 时不过滤（单用户/平台模式向后兼容）；
+   * - `userId` 不为 null 时严格匹配 `user_id = ? OR user_id IS NULL`——
+   *   登录用户只看到自己产生的会话（active + archived）+ 公开（NULL 旧数据），
+   *   看不到其他登录用户的会话。
+   *
+   * 用于 `/api/projects/archived` 这类"按用户隔离 + 包含归档"的视图。
+   */
+  getSessionsByProjectPathAndUserIdIncludingArchived(
+    projectPath: string,
+    userId: number | null,
+  ): SessionRow[] {
+    const db = getConnection();
+    const normalizedProjectPath = normalizeProjectPath(projectPath);
+    const rows = userId == null
+      ? db.prepare(
+          `SELECT ${SESSION_ROW_COLUMNS}
+           FROM sessions
+           WHERE project_path = ?
+           ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`,
+        ).all(normalizedProjectPath) as SessionRow[]
+      : db.prepare(
+          `SELECT ${SESSION_ROW_COLUMNS}
+           FROM sessions
+           WHERE project_path = ?
+             AND (user_id = ? OR user_id IS NULL)
+           ORDER BY datetime(COALESCE(updated_at, created_at)) DESC, session_id DESC`,
+        ).all(normalizedProjectPath, userId) as SessionRow[];
     return normalizeSessionRows(rows);
   },
 

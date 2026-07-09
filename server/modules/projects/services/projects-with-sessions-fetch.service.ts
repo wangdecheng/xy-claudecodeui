@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/index.js';
 import { WS_OPEN_STATE, connectedClients } from '@/modules/websocket/index.js';
 import type { RealtimeClientConnection } from '@/shared/types.js';
@@ -78,6 +78,27 @@ const DEFAULT_PROJECT_SESSIONS_PAGE_SIZE = 20;
 const MAX_PROJECT_SESSIONS_PAGE_SIZE = 200;
 
 /**
+ * 解析"用于同步器绑定新 session 的 userId"。
+ *
+ * 优先级：
+ *  1. caller 显式传进来的 userId（HTTP 路由从 req.user 提取）；
+ *  2. 否则用 `usersDb.getFirstUser().id`（平台模式 / 单用户 OSS 模式）。
+ *
+ * 找不到任何用户时抛 AppError（429/500 语义由上层 asyncHandler 转）——这
+ * 是防御性的，正常 DB 状态一定有至少一个 active 用户。
+ */
+async function resolvePlatformUserId(): Promise<number> {
+  const firstUser = userDb.getFirstUser();
+  if (!firstUser) {
+    throw new AppError('No active user available to attribute new sessions.', {
+      code: 'NO_ACTIVE_USER',
+      statusCode: 500,
+    });
+  }
+  return firstUser.id;
+}
+
+/**
  * Generate better display name from path.
  */
 export async function generateDisplayName(projectName: string, actualProjectDir: string | null = null): Promise<string> {
@@ -128,8 +149,16 @@ function mapSessionRowToSummary(row: SessionRepositoryRow): SessionSummary {
   };
 }
 
-function readProjectSessionsIncludingArchived(projectPath: string): ProjectSessionsPageResult {
-  const rows = sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath) as SessionRepositoryRow[];
+function readProjectSessionsIncludingArchived(
+  projectPath: string,
+  userId?: number | null,
+): ProjectSessionsPageResult {
+  // 严格按 userId 隔离：登录用户只看到自己产生的会话（active + archived）+ 公开（NULL 旧数据），
+  // 不在 DB 层就把他人会话拉出来再 JS 过滤，避免内存中转。
+  const rows = (userId == null
+    ? sessionsDb.getSessionsByProjectPathIncludingArchived(projectPath)
+    : sessionsDb.getSessionsByProjectPathAndUserIdIncludingArchived(projectPath, userId)
+  ) as SessionRepositoryRow[];
 
   return {
     sessions: rows.map(mapSessionRowToSummary),
@@ -187,7 +216,11 @@ export async function getProjectsWithSessions(
   options: GetProjectsWithSessionsOptions = {}
 ): Promise<ProjectListItem[]> {
   if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
+    // userId 必传：每个新发现的 session 必须绑定到当前登录用户,否则
+    // 后续按 user_id 过滤会把它当 NULL 公开行 / 或干脆被排除。
+    // 单用户平台模式下 readReqUserId 仍会返回第一个用户,语义稳定。
+    const syncUserId = options.userId ?? (await resolvePlatformUserId());
+    await sessionSynchronizerService.synchronizeSessions(syncUserId);
   }
 
   const projectRows = projectsDb.getProjectPaths() as Array<{
@@ -252,10 +285,12 @@ export async function getProjectsWithSessions(
  * conversation history in the archive view regardless of each session's flag.
  */
 export async function getArchivedProjectsWithSessions(
-  options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization'> = {},
+  options: Pick<GetProjectsWithSessionsOptions, 'skipSynchronization' | 'userId'> = {},
 ): Promise<ArchivedProjectListItem[]> {
   if (!options.skipSynchronization) {
-    await sessionSynchronizerService.synchronizeSessions();
+    // 同步用 userId：与 getProjectsWithSessions 同样的原因。
+    const syncUserId = options.userId ?? (await resolvePlatformUserId());
+    await sessionSynchronizerService.synchronizeSessions(syncUserId);
   }
 
   const projectRows = projectsDb.getArchivedProjectPaths() as Array<{
@@ -266,6 +301,7 @@ export async function getArchivedProjectsWithSessions(
   }>;
 
   const archivedProjects: ArchivedProjectListItem[] = [];
+  const userId = options.userId ?? null;
 
   for (const row of projectRows) {
     const displayName =
@@ -273,7 +309,13 @@ export async function getArchivedProjectsWithSessions(
         ? row.custom_project_name
         : await generateDisplayName(path.basename(row.project_path) || row.project_path, row.project_path);
 
-    const sessionsPage = readProjectSessionsIncludingArchived(row.project_path);
+    const sessionsPage = readProjectSessionsIncludingArchived(row.project_path, userId);
+
+    // 登录用户在该项目下零条可见会话（既无自己的、也无公开 NULL）→ 跳过该归档项目，
+    // 避免误以为"我有过这些项目"，也避免通过项目列表反推他人数据规模。
+    if (userId != null && sessionsPage.sessions.length === 0) {
+      continue;
+    }
 
     archivedProjects.push({
       projectId: row.project_id,

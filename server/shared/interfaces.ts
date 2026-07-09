@@ -161,11 +161,19 @@ export interface IProviderSessions {
 export interface IProviderSessionSynchronizer {
   /**
    * Scans provider session artifacts and upserts discovered sessions into DB.
+   *
+   * `userId` 必传：同步器把 caller 解析出的当前登录用户（HTTP 路由走
+   * `req.user.id`，watcher 走 `usersDb.getFirstUser().id`）绑定到每一
+   * 个新创建的 session 行。漏传会在 `createSession` 入口被
+   * `assertSessionUserId` 拦截，防止"历史 session 全是 NULL user_id"。
    */
-  synchronize(since?: Date): Promise<number>;
+  synchronize(since: Date | undefined, userId: number): Promise<number>;
 
   /**
    * Parses and upserts one provider artifact file without running a full scan.
+   *
+   * `userId` 必传：语义与 `synchronize` 一致——watcher 解析出 userId 后
+   * 透传到同步器再透传到 `createSession`。
    */
-  synchronizeFile(filePath: string): Promise<string | null>;
+  synchronizeFile(filePath: string, userId: number): Promise<string | null>;
 }

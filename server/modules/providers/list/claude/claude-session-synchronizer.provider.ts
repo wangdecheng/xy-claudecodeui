@@ -42,8 +42,12 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Scans ~/.claude/projects and upserts discovered sessions into DB.
+   *
+   * `userId` 必传（见 `IProviderSessionSynchronizer` 接口注释），由
+   * caller 解析（HTTP 路由走 `req.user.id`，watcher 走
+   * `usersDb.getFirstUser().id`），透传到底层 `createSession` 绑定归属。
    */
-  async synchronize(since?: Date): Promise<number> {
+  async synchronize(since: Date | undefined, userId: number): Promise<number> {
     const nameMap = await buildLookupMap(path.join(this.claudeHome, 'history.jsonl'), 'sessionId', 'display');
     const files = await findFilesRecursivelyCreatedAfter(
       path.join(this.claudeHome, 'projects'),
@@ -67,6 +71,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
         parsed.sessionId,
         this.provider,
         parsed.projectPath,
+        userId,
         parsed.sessionName,
         timestamps.createdAt,
         timestamps.updatedAt,
@@ -80,8 +85,10 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
 
   /**
    * Parses and upserts one Claude session JSONL file.
+   *
+   * `userId` 必传：watcher 解析后透传到 `createSession`。
    */
-  async synchronizeFile(filePath: string): Promise<string | null> {
+  async synchronizeFile(filePath: string, userId: number): Promise<string | null> {
     if (!filePath.endsWith('.jsonl')) {
       return null;
     }
@@ -100,6 +107,7 @@ export class ClaudeSessionSynchronizer implements IProviderSessionSynchronizer {
       parsed.sessionId,
       this.provider,
       parsed.projectPath,
+      userId,
       parsed.sessionName,
       timestamps.createdAt,
       timestamps.updatedAt,

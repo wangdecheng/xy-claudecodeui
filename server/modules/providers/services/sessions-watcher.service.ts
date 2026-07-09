@@ -4,7 +4,7 @@ import { promises as fsPromises } from 'node:fs';
 
 import chokidar, { type FSWatcher } from 'chokidar';
 
-import { projectsDb, sessionsDb } from '@/modules/database/index.js';
+import { projectsDb, sessionsDb, userDb } from '@/modules/database/index.js';
 import { sessionSynchronizerService } from '@/modules/providers/services/session-synchronizer.service.js';
 import { WS_OPEN_STATE, connectedClients, clientUserMap } from '@/modules/websocket/index.js';
 import type { LLMProvider } from '@/shared/types.js';
@@ -246,6 +246,22 @@ async function flushPendingWatcherUpdate(): Promise<void> {
 }
 
 /**
+ * 解析"用于 watcher 同步绑定的 userId"。
+ *
+ * Watcher 启动时与文件事件触发时都没有 HTTP 请求上下文（无 req.user），
+ * 走 `usersDb.getFirstUser().id` 解析当前平台用户。多用户场景下这个
+ * userId 是"系统用户"——watcher 触发的 session 归属会以这个用户为
+ * 准，COALESCE 语义保证后续其他用户访问不会偷走归属。
+ */
+function resolveWatcherUserId(): number {
+  const firstUser = userDb.getFirstUser();
+  if (!firstUser) {
+    throw new Error('No active user available to attribute watcher-discovered sessions.');
+  }
+  return firstUser.id;
+}
+
+/**
  * Handles file watcher updates and triggers provider file-level synchronization.
  */
 async function onUpdate(
@@ -258,7 +274,11 @@ async function onUpdate(
   }
 
   try {
-    const result = await sessionSynchronizerService.synchronizeProviderFile(provider, filePath);
+    const result = await sessionSynchronizerService.synchronizeProviderFile(
+      provider,
+      filePath,
+      resolveWatcherUserId(),
+    );
     if (!result.indexed) {
       return;
     }
@@ -284,7 +304,7 @@ async function onUpdate(
 export async function initializeSessionsWatcher(): Promise<void> {
   console.log('Setting up session watchers');
 
-  const initialSync = await sessionSynchronizerService.synchronizeSessions();
+  const initialSync = await sessionSynchronizerService.synchronizeSessions(resolveWatcherUserId());
   console.log('Initial session synchronization complete', {
     processedByProvider: initialSync.processedByProvider,
     failures: initialSync.failures,

@@ -142,7 +142,7 @@ export const sessionsService = {
   createAppSession(
     provider: LLMProvider,
     projectPath: string,
-    userId?: number | string | null,
+    userId: number | string,
   ): CreateAppSessionResult {
     const normalizedProjectPath = projectPath.trim();
     if (!normalizedProjectPath) {

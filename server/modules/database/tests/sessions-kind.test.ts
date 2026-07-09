@@ -90,7 +90,7 @@ test('createOnsiteSession 写入 kind=onsite + cwd + third_bridge_branch + itera
       third_bridge_branch: 'master_5.2_3.2',
       iteration: 'master_5.2_3.2',
       database: 'db01',
-    });
+    }, 1);
     assert.equal(id, 's-onsite-1');
 
     // Direct DB read — sessionsDb.getSessionById projects through
@@ -131,7 +131,7 @@ test('createOnsiteSession kind 列存为 onsite(直接查 DB)', async () => {
       third_bridge_branch: null,
       iteration: 'master_5.2_3.2',
       database: 'db02',
-    });
+    }, 1);
     // Verify via project-path lookup (covers that row was inserted)
     const projectPath = '/work/project';
     const rows = sessionsDb.getSessionsByProjectPath(projectPath);
@@ -164,7 +164,7 @@ test('findOnsiteSessionByCwd 找到对应 onsite session', async () => {
       third_bridge_branch: null,
       iteration: 'master_5.2_3.2',
       database: 'db03',
-    });
+    }, 1);
     const found = sessionsDb.findOnsiteSessionByCwd('/work/proj/cust-abc');
     assert.ok(found);
     assert.equal(found?.session_id, 's-onsite-3');
@@ -189,7 +189,7 @@ test('createOnsiteSession 拒绝 third_bridge_branch 为非 string|undefined 的
         third_bridge_branch: null,
         iteration: 'master_5.2_3.2',
         database: 'db04',
-      });
+      }, 1);
     });
     const found = sessionsDb.findOnsiteSessionByCwd('/work/proj/cust-null-branch');
     assert.ok(found);
@@ -202,7 +202,7 @@ test('chat createSession 仍然走 chat kind(向后兼容)', async () => {
     // createSession (legacy chat path) should not throw and should still
     // produce a row. After C-1+I-9 fixes the kind defaults to 'chat' via
     // the schema DEFAULT and an app-layer assertSessionKind('chat') guard.
-    sessionsDb.createSession('s-chat-1', 'claude', '/work/chatproj', 'chat session');
+    sessionsDb.createSession('s-chat-1', 'claude', '/work/chatproj', 1, 'chat session', undefined, undefined, null);
     const row = sessionsDb.getSessionById('s-chat-1');
     assert.ok(row);
     assert.equal(row?.session_id, 's-chat-1');
@@ -211,7 +211,7 @@ test('chat createSession 仍然走 chat kind(向后兼容)', async () => {
 
 test('createAppSession 仍走 chat kind(向后兼容)', async () => {
   await withIsolatedDatabase(() => {
-    sessionsDb.createAppSession('s-app-1', 'claude', '/work/chatproj');
+    sessionsDb.createAppSession('s-app-1', 'claude', '/work/chatproj', 1);
     const row = sessionsDb.getSessionById('s-app-1');
     assert.ok(row);
     assert.equal(row?.session_id, 's-app-1');
