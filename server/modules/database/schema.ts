@@ -137,7 +137,12 @@ CREATE TABLE IF NOT EXISTS onsite_problems (
     customer TEXT NOT NULL,
     third_bridge_branch TEXT,
     iteration TEXT NOT NULL,
-    database TEXT NOT NULL,
+    -- database 可空: ProblemService.create 在用户选「其他」(value=other)
+    -- 时把 database 存 null,代表"用户还不知道数据库类型,等补充"。
+    -- 旧 schema 这里写的是 NOT NULL, 触发过 NOT NULL constraint failed,
+    -- 已被 Batch X (放宽 database 可空) 修复; 见 migrations.ts 的
+    -- dropOnsiteProblemsDatabaseNotNull 用于把已存在的 DB 改造成新约束。
+    database TEXT,
     status TEXT NOT NULL DEFAULT 'pending_info',
     cwd TEXT NOT NULL,
     problem_json_path TEXT,

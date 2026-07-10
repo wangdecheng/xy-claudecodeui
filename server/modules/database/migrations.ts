@@ -522,6 +522,12 @@ export const runMigrations = (db: Database) => {
     addColumnToTableIfNotExists(db, 'onsite_problems', onsiteProblemsColumns, 'root_cause_text', 'TEXT');
     addColumnToTableIfNotExists(db, 'onsite_problems', onsiteProblemsColumns, 'description', 'TEXT DEFAULT \'\'');
 
+    // 放宽 onsite_problems.database 的 NOT NULL 约束: 旧 schema 把 database
+    // 设为 NOT NULL, 但 ProblemService.create 在 database='other' 时存 null,
+    // 触发 NOT NULL constraint failed。必须先 addColumnToTableIfNotExists
+    // 把列补齐, 再做"重建表去掉 NOT NULL"的事, 否则新列不会带过去。
+    dropOnsiteProblemsDatabaseNotNull(db);
+
     // Onsite indexes (kept in migrations so we don't depend on INIT_SCHEMA_SQL
     // having run for an upgraded database that pre-dates these tables).
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd)');
@@ -577,6 +583,81 @@ const addSessionsUserIdColumn = (db: Database): void => {
   }
   const columnNames = info.map((c) => c.name);
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'user_id', 'INTEGER');
+};
+
+/**
+ * 放宽 onsite_problems.database 列的 NOT NULL 约束, 允许 service 层把
+ * `database === 'other'` (代表"用户暂未指定") 落 null。SQLite 没有
+ * `ALTER TABLE ... DROP NOT NULL`, 标准做法是重建表 —— 走 5 步:
+ *
+ *   1. CREATE TABLE _new (..., database TEXT, ...)  // 不带 NOT NULL
+ *   2. INSERT INTO _new SELECT ... FROM 旧表        // 拷数据
+ *   3. DROP TABLE 旧表
+ *   4. ALTER TABLE _new RENAME TO 原表名
+ *   5. 重建索引 (PRAGMA table_info 拿不到索引列表, 用 IF NOT EXISTS
+ *      兜底; sqlite_master 查索引更稳, 这里直接 hardcode onsite 用到的
+ *      两条, 跟 migrateAll 里其他 CREATE INDEX 保持一致)
+ *
+ * 幂等: PRAGMA table_info 读 notnull 列, 已经为 0 直接 return;
+ * 迁移已经在 transaction 内, 任何步骤失败整批回滚。
+ *
+ * 触发条件: 老 DB 在 schema.ts 改之前的 NOT NULL 版本上建的。
+ */
+type TableInfoFullRow = {
+  name: string;
+  type: string;
+  notnull: number;
+  pk: number;
+  dflt_value: unknown;
+};
+
+const getFullTableInfo = (db: Database, tableName: string): TableInfoFullRow[] =>
+  db.prepare(`PRAGMA table_info(${tableName})`).all() as TableInfoFullRow[];
+
+const dropOnsiteProblemsDatabaseNotNull = (db: Database): void => {
+  if (!tableExists(db, 'onsite_problems')) {
+    // 新 DB: ONSITE_PROBLEMS_TABLE_SCHEMA_SQL 已经是 nullable, 无事可做
+    return;
+  }
+  const cols = getFullTableInfo(db, 'onsite_problems');
+  const dbCol = cols.find((c) => c.name === 'database');
+  if (!dbCol) {
+    // 旧 schema 演化路径上偶发情况: 列都没了, 跳过
+    return;
+  }
+  if (dbCol.notnull === 0) {
+    // 已经 nullable, 幂等通过
+    return;
+  }
+  console.log(
+    'Running migration: Dropping NOT NULL on onsite_problems.database ' +
+      '(recreate-table, see migrations.ts:dropOnsiteProblemsDatabaseNotNull)',
+  );
+
+  // 动态拼列定义, 保持原列名/类型/默认值/主键, 只对 database 去掉 NOT NULL
+  const columnDefs = cols
+    .map((c) => {
+      // 本次迁移只对 database 这一列去掉 NOT NULL, 其他列严格按原表复刻
+      const notNull = c.name === 'database' ? '' : c.notnull ? ' NOT NULL' : '';
+      const defaultClause = c.dflt_value === null ? '' : ` DEFAULT ${JSON.stringify(c.dflt_value)}`;
+      const pk = c.pk ? ' PRIMARY KEY' : '';
+      return `${c.name} ${c.type || 'TEXT'}${notNull}${defaultClause}${pk}`;
+    })
+    .join(',\n    ');
+
+  db.exec(`
+    CREATE TABLE onsite_problems_new (
+      ${columnDefs}
+    );
+    INSERT INTO onsite_problems_new
+      SELECT ${cols.map((c) => c.name).join(', ')} FROM onsite_problems;
+    DROP TABLE onsite_problems;
+    ALTER TABLE onsite_problems_new RENAME TO onsite_problems;
+  `);
+
+  // 重建 onsite_problems 的索引 (DROP TABLE 把索引一起带走, RENAME 不会恢复)
+  db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd)');
+  db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_status ON onsite_problems(status)');
 };
 
 const addSessionsKindAndOnsiteColumns = (db: Database): void => {

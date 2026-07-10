@@ -6,11 +6,15 @@
  * as warnings; disk failures throw.
  *
  * Disk layout (per existing CLAUDE.md in customer-onsite-analysis/):
- *   ~/work/customer-onsite-analysis/YYYYMMDD-客户/problem.json
- *   ~/work/customer-onsite-analysis/YYYYMMDD-客户/unpacked-N/<logs>
+ *   ~/work/customer-onsite-analysis/YYYYMMDDHHMMSS-客户/problem.json
+ *   ~/work/customer-onsite-analysis/YYYYMMDDHHMMSS-客户/unpacked-N/<logs>
  *
- * Duplicate same-day creation appends `_2`, `_3`, ... to the directory and
- * the `id` field on the row.
+ * 历史目录 (YYYYMMDD-客户, 无 HHMMSS) 仍然可读: 目录前缀正则把 HHMMSS
+ * 部分设为可选, list / getById 兼容旧数据。
+ *
+ * Duplicate same-second creation appends `_2`, `_3`, ... to the directory
+ * and the `id` field on the row. HHMMSS 精度把"删除后立即在同一秒重建"
+ * 的 ID 复用窗口几乎关闭, 残留的同秒并发达到 _N 兜底。
  */
 
 import { existsSync } from 'node:fs';
@@ -19,6 +23,8 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
+import { userDb } from '@/modules/database/repositories/users.js';
 import { getConfig } from './config.service.js';
 import { messagesStore } from './messages-store.service.js';
 
@@ -65,6 +71,12 @@ export type CreateProblemInput = {
   date?: string;
   /** 必填:问题描述(≤2000 字符)。空字符串会抛 DescriptionRequiredError。 */
   description: string;
+  /**
+   * 创建者的 userId; 缺省时回退到 `userDb.getFirstUser().id`(平台/单用户模式)。
+   * 路由层必须显式传 `req.user.id`; 此回退是给脚本/测试用的兜底, 不会
+   * 把匿名 NULL 行写进 sessions 表。
+   */
+  userId?: number;
 };
 
 export type ProblemRecord = {
@@ -114,7 +126,9 @@ export function assertCwdUnderRoot(cwd: string, root: string = resolveOnsiteRoot
   }
 }
 
-const YYYYMMDD_PREFIX_REGEX = /^(\d{8})-(.+)$/;
+// 匹配 YYYYMMDD[-HHMMSS]-客户. HHMMSS 是可选的, 让历史无 HHMMSS 的目录
+// 仍然能被 list / getById 读到. match[1] 是 8 位日期前缀, match[2] 是客户段。
+const YYYYMMDD_PREFIX_REGEX = /^(\d{8})(?:\d{6})?-(.+)$/;
 const DATE_SUFFIX_REGEX = /_(\d+)$/;
 
 function extractCustomer(dirName: string): string {
@@ -158,7 +172,10 @@ export const problemService = {
     const storedDescription = trimmedDescription.slice(0, 2000);
 
     const today = new Date();
-    let yyyymmdd = formatYyyymmdd(today);
+    // 时间前缀升级为 yyyymmddHHmmss, 关闭"删除后秒内重建"导致的 ID 复用窗口。
+    // 14 位前缀里, yyyy-mm-dd 段可被 input.date 覆盖, HHmmss 段始终取自 now,
+    // 同秒并发落到 nextAvailableDirName 的 _2 兜底。
+    let dateKey = formatYyyymmddHHmmss(today);
 
     if (input.date !== undefined) {
       const isoDate = input.date;
@@ -169,16 +186,21 @@ export const problemService = {
       if (isoDate > todayIso) {
         throw new FutureDateError(isoDate);
       }
-      yyyymmdd = isoDate.replace(/-/g, '');
+      // 替换前 8 位为输入日期, HHmmss 段保持当前时刻
+      const yyyymmdd = isoDate.replace(/-/g, '');
+      const hhmmss = dateKey.slice(8);
+      dateKey = `${yyyymmdd}${hhmmss}`;
     }
 
     const sanitizedCustomer = sanitizeCustomerLabel(input.customer);
-    const baseDirName = `${yyyymmdd}-${sanitizedCustomer}`;
+    const baseDirName = `${dateKey}-${sanitizedCustomer}`;
     const dirName = await nextAvailableDirName(root, baseDirName);
     const dirPath = path.join(root, dirName);
     await mkdir(dirPath, { recursive: true });
 
-    // 数据库选「其他」(value=other)时存 null,问题进 pending_info 等待补充
+    // 数据库选「其他」(value=other)时存 null —— 代表"用户暂未指定数据库类型, 待补充"。
+    // DB 层 onsite_problems.database 已被放宽为 nullable (见 schema.ts + migrations.ts),
+    // 这里写 null 不再触发 NOT NULL constraint failed。
     const storedDatabase = input.database === 'other' ? null : input.database;
 
     const problemJsonPath = path.join(dirPath, 'problem.json');
@@ -188,7 +210,7 @@ export const problemService = {
       customer: sanitizedCustomer,
       third_bridge_branch: input.third_bridge_branch,
       iteration: input.iteration,
-      database: storedDatabase as string | null as string, // legacy: column is non-null; DB layer accepts null
+      database: storedDatabase as string | null as string, // database 列已放宽为 nullable
       status: 'analyzing',
       cwd: dirPath,
       problem_json_path: problemJsonPath,
@@ -225,6 +247,56 @@ export const problemService = {
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
       console.warn(`[problem.service] DB insert failed for ${record.id}; disk is authoritative: ${message}`);
+    }
+
+    // Eager session: 在 create 这一刻就把 sessions 行建好, 关闭
+    // "create → 立即打开聊天 → 立即发消息" 这条链路上的 race —— 旧行为
+    // 是 sessions 行在 WS hello 帧被服务端校验后才懒建, 客户端 chat.send
+    // 可能早于 hello 到达 → getSessionById 拿不到 → SESSION_NOT_FOUND →
+    // AI 无回应。新行为: problem 一建, session 就到位; 旧路径上的
+    // ensureOnsiteSession 仍保留为幂等兜底(重连/重启场景)。
+    //
+    // userId 解析: input.userId 优先; 缺省取平台首用户(单用户模式)。
+    // 拿不到任何 user (e.g. 测试 DB 空) 时 console.warn 兜底, 不让 create 抛
+    // —— 与 onsite_problems DB insert 同等级, disk 仍是 source of truth。
+    let resolvedUserId: number | null = null;
+    if (typeof input.userId === 'number' && Number.isInteger(input.userId) && input.userId > 0) {
+      resolvedUserId = input.userId;
+    } else {
+      try {
+        const firstUser = userDb.getFirstUser();
+        if (firstUser) resolvedUserId = Number(firstUser.id);
+      } catch {
+        /* ignore — fall through to no-user path */
+      }
+    }
+    if (resolvedUserId === null) {
+      console.warn(
+        `[problem.service] eager session skipped for ${record.id}: no userId available ` +
+          `(input.userId missing and userDb.getFirstUser() returned no user); ` +
+          `chat will rely on the lazy ensureOnsiteSession path`,
+      );
+    } else {
+      try {
+        sessionsDb.createOnsiteSession(
+          record.id,
+          'claude',
+          dirPath,
+          {
+            cwd: dirPath,
+            third_bridge_branch: record.third_bridge_branch,
+            iteration: record.iteration,
+            database: record.database,
+          },
+          resolvedUserId,
+        );
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(
+          `[problem.service] eager session create failed for ${record.id}; ` +
+            `fall back to lazy ensureOnsiteSession: ${message}`,
+        );
+      }
     }
 
     return record;
@@ -315,7 +387,10 @@ export const problemService = {
     const dirPath = path.join(root, id);
     if (!existsSync(dirPath)) return null;
 
-    let status = 'pending_info';
+    // 默认 'analyzing': 与 list() 保持一致。'pending_info' 状态已由
+    // 77502ed 废弃, 旧 problem.json 若有该值会通过 deriveStatusFromProblemJson
+    // 原样回传, 这里只覆盖"读不到 problem.json"这一条 fallback 路径。
+    let status = 'analyzing';
     let customer = extractCustomer(id);
     let iteration: string | null = null;
     let database: string | null = null;
@@ -384,29 +459,74 @@ export const problemService = {
     onsiteProblemsDb.deleteById(id);
     // 清内存 ring buffer
     messagesStore.clear(id);
+    // 记入墓碑:即使磁盘+DB+内存都被清空, "同一个 ID 不允许被再次生成出来"。
+    // 在 nextAvailableDirName 选名时, 已墓碑的 baseDirName 会立即被抬到 _2。
+    markDeleted(id);
     return { id, deleted: true };
   },
 };
 
 /**
+ * Tombstone ring buffer — 容量上限 100, FIFO. 进程级内存, 不持久化。
+ * 重启进程后历史墓碑会丢失, 但用户重新登录后短期内重复秒级创建的概率可忽略,
+ * 且 ID 复用窗口被设上的默认在 100 条之外会被自然允许, 仍然是合理行为。
+ *
+ * 选择内存而不是 DB 是为了:
+ *  - 不引入 schema 迁移 / 不依赖 DB 可用;
+ *  - remove 成功后立即 push, create 时 O(1) 判断;
+ *  - 服务重启不需要重建墓碑, 用户一旦发现重复创建会被 _N 兜底自然接住。
+ */
+const RECENT_DELETED_MAX = 100;
+const recentDeletedIds = new Set<string>();
+const recentDeletedOrder: string[] = [];
+
+function markDeleted(id: string): void {
+  if (recentDeletedIds.has(id)) return;
+  recentDeletedIds.add(id);
+  recentDeletedOrder.push(id);
+  if (recentDeletedOrder.length > RECENT_DELETED_MAX) {
+    const evicted = recentDeletedOrder.shift();
+    if (evicted !== undefined) recentDeletedIds.delete(evicted);
+  }
+}
+
+/**
+ * 测试辅助: 清空墓碑。生产代码不要调用, 这是为 withIsolatedEnv 测试隔离设计的,
+ * 避免前面跑过的 remove() 把状态渗透到当前测试。
+ */
+export function __resetTombstoneForTests(): void {
+  recentDeletedIds.clear();
+  recentDeletedOrder.length = 0;
+}
+
+/**
  * Find the next available directory name with `_N` suffix on collision.
- * `20260703-山西公安` -> `20260703-山西公安_2` -> `..._3`, etc.
+ *
+ *   `20260710095427-山西公安` (base, 不在 tombstone 且磁盘不存在) -> `20260710095427-山西公安`
+ *   `20260710095427-山西公安` (在 tombstone 内)             -> `20260710095427-山西公安_2`
+ *   `20260710095427-山西公安` (磁盘已存在)                  -> `20260710095427-山西公安_2`
+ *
+ * 上限 1000 轮 (与磁盘形态一致)。
  */
 async function nextAvailableDirName(root: string, baseDirName: string): Promise<string> {
   const first = path.join(root, baseDirName);
-  if (!existsSync(first)) return baseDirName;
+  if (!existsSync(first) && !recentDeletedIds.has(baseDirName)) return baseDirName;
   for (let i = 2; i < 1000; i += 1) {
     const candidate = `${baseDirName}_${i}`;
+    if (recentDeletedIds.has(candidate)) continue;
     if (!existsSync(path.join(root, candidate))) return candidate;
   }
   throw new Error(`Too many duplicate problem dirs for ${baseDirName} under ${root}`);
 }
 
-function formatYyyymmdd(date: Date): string {
+function formatYyyymmddHHmmss(date: Date): string {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
   const d = String(date.getDate()).padStart(2, '0');
-  return `${y}${m}${d}`;
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const ss = String(date.getSeconds()).padStart(2, '0');
+  return `${y}${m}${d}${hh}${mm}${ss}`;
 }
 
 /**

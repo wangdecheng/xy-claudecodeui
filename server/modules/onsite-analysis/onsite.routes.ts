@@ -187,6 +187,25 @@ router.post('/problems', (req: Request, res: Response) => {
   }
 
   // 3) 调 ProblemService.create — CwdEscapeError 翻译成 409
+  // userId 必传 (create 内会强转 sessions 表 user_id 列 NOT NULL)。
+  // req.user 由 server/middleware/auth.js 的 authenticateToken 挂上,
+  // 这里走 number 优先 + 字符串兜底, 与其他路由(confirm-root-cause 等)
+  // 解析方式一致。
+  type RequestWithUser = Request & { user?: { id?: string | number } };
+  const userIdRaw = (req as RequestWithUser).user?.id;
+  const userId =
+    typeof userIdRaw === 'number'
+      ? userIdRaw
+      : typeof userIdRaw === 'string' && userIdRaw.length > 0
+        ? Number(userIdRaw)
+        : NaN;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({
+      error: 'AUTH_USER_ID_MISSING',
+      message: 'authenticated user id is required to create an onsite problem',
+    });
+  }
+
   problemService
     .create({
       customer,
@@ -195,6 +214,7 @@ router.post('/problems', (req: Request, res: Response) => {
       database,
       cwd,
       description,
+      userId,
     })
     .then((record: ProblemRecord) => {
       res.status(201).json(record);
