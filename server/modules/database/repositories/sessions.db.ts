@@ -398,6 +398,54 @@ export const sessionsDb = {
   },
 
   /**
+   * 返回当前登录用户可见的 onsite session_id 集合（用于 onsite problems
+   * 列表按用户隔离过滤）。
+   *
+   * 语义与既有 `getSessionsByProjectPathAndUserId` 一致（参见 c411c99 引入
+   * 的 COALESCE 约定）：
+   * - `userId` 为 null 时不过滤（平台模式 / 单用户模式向后兼容）；
+   * - `userId` 不为 null 时严格匹配 `user_id = ? OR user_id IS NULL`——
+   *   登录用户只看到自己产生的 problem + 公开（NULL 历史行），看不到
+   *   其他登录用户的 problem。
+   *
+   * 不在返回集合里的 session_id 不一定"私有"，也可能是 problem 还没建
+   * sessions 行（孤儿）。调用方（problem.service.list）需要再做一次
+   * "孤儿 vs 私有"的区分：私有用户的 sessions 行 + 当前用户不在
+   * user_id 集合里 ⇒ 隐藏。
+   */
+  getVisibleOnsiteSessionIds(userId: number | null): Set<string> {
+    const db = getConnection();
+    const rows = userId == null
+      ? (db
+          .prepare(
+            `SELECT session_id FROM sessions WHERE kind = 'onsite'`,
+          )
+          .all() as { session_id: string }[])
+      : (db
+          .prepare(
+            `SELECT session_id FROM sessions
+             WHERE kind = 'onsite'
+               AND (user_id = ? OR user_id IS NULL)`,
+          )
+          .all(userId) as { session_id: string }[]);
+    return new Set(rows.map((r) => r.session_id));
+  },
+
+  /**
+   * 返回所有 onsite session_id 集合（不限 userId）。problem.service.list
+   * 用来区分"孤儿 problem"（磁盘上有目录但 sessions 表里完全没有对应行）
+   * 与"私有 problem"（sessions 行存在但当前用户不可见）。孤儿视为公开，
+   * 私有用户的 sessions 行必须被过滤。
+   */
+  getAllOnsiteSessionIds(): Set<string> {
+    const db = getConnection();
+    const rows = db
+      .prepare(`SELECT session_id FROM sessions WHERE kind = 'onsite'`)
+      .all() as { session_id: string }[];
+    return new Set(rows.map((r) => r.session_id));
+  },
+
+  /**
    * Records the provider-native session id for one app-allocated session.
    *
    * If the filesystem watcher indexed the provider transcript before this

@@ -118,6 +118,7 @@ export default function App() {
                   <Router basename={routerBasename}>
                     <Routes>
                       <Route path="/" element={<Navigate to="/onsite" replace />} />
+                      <Route path="/sessions" element={<AppContent />} />
                       <Route path="/session/:sessionId" element={<AppContent />} />
                       <Route path="/onsite" element={<OnsiteLayout />} />
                       <Route path="/onsite/:problemId" element={<OnsiteLayout />} />

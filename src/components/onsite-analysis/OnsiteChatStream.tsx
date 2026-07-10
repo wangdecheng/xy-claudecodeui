@@ -38,14 +38,21 @@ import CardRenderer from './cards/CardRenderer';
 import CwdLockView from './CwdLockView';
 import DisciplineCounter from './DisciplineCounter';
 import { initialOnsiteRunState, reduceOnsiteRunState } from './onsiteRunState';
+import {
+  applyOnsiteChatFrame,
+  createInitialOnsiteStreamState,
+  type OnsiteStreamMessage,
+  type OnsiteStreamState,
+} from './onsiteChatReducer';
+import {
+  buildReplayedMessages,
+  mergeReplayedMessages,
+} from './onsiteChatReplay';
 import { sqlTemplateFor } from './sqlTemplates';
 
 // ─── Stream message model ────────────────────────────────────────────────
 
-export type OnsiteStreamMessage =
-  | { id: string; role: 'user'; kind: 'text'; text: string; ts: number }
-  | { id: string; role: 'assistant'; kind: 'text'; text: string; ts: number; softening?: boolean }
-  | { id: string; role: 'tool'; kind: 'tool_use' | 'tool_result'; name?: string; text: string; ts: number };
+// OnsiteStreamMessage 现在从 onsiteChatReducer 导入(避免类型在两处定义产生漂移)
 
 interface DisciplineLogEntry {
   ts: number;
@@ -118,7 +125,8 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const accumulatedRef = useRef('');
   const streamTimerRef = useRef<number | null>(null);
   // 稳定的 streaming 消息 id,跨多次 setMessages 复用,防止 React key 漂移
-  const streamingMsgIdRef = useRef(`streaming-${Date.now()}`);
+  // 用 reducer 的初始值作为单一来源,避免两边用不同公式算出漂移
+  const streamingMsgIdRef = useRef(createInitialOnsiteStreamState().streamingMsgId);
 
   // ─── effects ────────────────────────────────────────────────────────
 
@@ -135,6 +143,10 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   // 切到某个 problem:从 server 端 ring buffer 拉历史消息回放。
   // 修复前 messages 仅来自 WS subscribe,切走后再切回看不到历史。
   // 用 cancelled 标记丢弃过期响应,避免快速切 problem 时旧 fetch 覆盖新 state。
+  //
+  // 关键:用 setMessages 的 functional 形式 + mergeReplayedMessages 实现 append-only,
+  // 避免 fetch resolve 时把已乐观插入的 user 消息或已到达的 WS 帧覆盖掉
+  // (Bug 复现:新建问题时首条 user 消息消失)。见 onsiteChatReplay.ts。
   useEffect(() => {
     if (!problemId) return;
     let cancelled = false;
@@ -142,27 +154,8 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       const stored = await loadMessages(problemId);
       if (cancelled) return;
       if (stored.length === 0) return;
-      // 转成 OnsiteStreamMessage,按 ts 正序(API 已正序返回)。
-      const replayed: OnsiteStreamMessage[] = stored.map((m) => {
-        if (m.kind === 'tool_use' || m.kind === 'tool_result') {
-          return {
-            id: `srv-${m.problemId}-${m.ts}-${m.kind}`,
-            role: 'tool',
-            kind: m.kind,
-            text: m.content,
-            ts: m.ts,
-          };
-        }
-        // text / other 一律当 text 渲染
-        return {
-          id: `srv-${m.problemId}-${m.ts}-${m.kind}`,
-          role: m.role === 'user' ? 'user' : 'assistant',
-          kind: 'text',
-          text: m.content,
-          ts: m.ts,
-        };
-      });
-      setMessages(replayed);
+      const replayed = buildReplayedMessages(stored);
+      setMessages((cur) => mergeReplayedMessages(cur, replayed));
     })();
     return () => {
       cancelled = true;
@@ -189,7 +182,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       streamTimerRef.current = null;
     }
     accumulatedRef.current = '';
-    streamingMsgIdRef.current = `streaming-${Date.now()}`;
+    streamingMsgIdRef.current = createInitialOnsiteStreamState().streamingMsgId;
   }, [problemId]);
 
   // Subscribe to WS frames.
@@ -298,130 +291,83 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       if (typeof ev.kind !== 'string') return;
       if (!ALLOWED_KINDS.has(ev.kind)) return;
 
-      const ts = Date.now();
-      const content = ev.content ?? '';
-
-      if (ev.kind === 'text') {
-        const role = ev.role === 'user' ? 'user' : 'assistant';
-        setMessages((cur) => [
-          ...cur,
-          {
-            id: makeId(),
-            role,
-            kind: 'text',
-            text: content,
-            ts,
-          },
-        ]);
-      } else if (ev.kind === 'tool_use' || ev.kind === 'tool_result') {
-        setMessages((cur) => [
-          ...cur,
-          {
-            id: makeId(),
-            role: 'tool',
-            kind: ev.kind as 'tool_use' | 'tool_result',
-            ...(typeof ev.name === 'string' ? { name: ev.name } : {}),
-            text: content,
-            ts,
-          },
-        ]);
-      } else if (ev.kind === 'error') {
-        // SDK 运行期错误:作为红色 error 气泡渲染,让操作者知道出错了
+      // error 单独走 —— 还要标记 runState 终止, reducer 不管这个
+      if (ev.kind === 'error') {
+        // SDK 运行期错误: 作为红色 error 气泡渲染, 让操作者知道出错了
         setMessages((cur) => [
           ...cur,
           {
             id: makeId(),
             role: 'assistant',
-            kind: 'text' as const,
-            text: `⚠️ ${content || '未知错误'}`,
-            ts,
+            kind: 'text',
+            text: `⚠️ ${ev.content || '未知错误'}`,
+            ts: Date.now(),
           },
         ]);
         setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
-      } else if (ev.kind === 'stream_delta' && content) {
-        // 实时流文本累积: Claude SDK 不发完整 assistant text,而是连续
-        // stream_delta 推送文本片段。用 ref 累积 + 100ms 定时器批量
-        // flush(与 chat 路径 useChatRealtimeHandlers 一致),用稳定 id
+        return;
+      }
+
+      // 其余 reducer 关心的 kind (text / tool_use / tool_result / stream_delta
+      // / stream_end / complete) 统一走 applyOnsiteChatFrame。reducer 内部处理
+      // 了 stream_delta 与终态 text 的去重(Claude SDK 一次响应会同时发
+      // 逐字片段和装配好的整段), 见 onsiteChatReducer.ts 的不变量说明。
+      const applyReducer = (frame: OnsiteChatFrame): void => {
+        setMessages((cur) => {
+          const state: OnsiteStreamState = {
+            messages: cur,
+            accumulated: accumulatedRef.current,
+            streamingMsgId: streamingMsgIdRef.current,
+          };
+          const next = applyOnsiteChatFrame(state, frame);
+          accumulatedRef.current = next.accumulated;
+          streamingMsgIdRef.current = next.streamingMsgId;
+          return next.messages;
+        });
+      };
+
+      if (ev.kind === 'stream_delta') {
+        const content = typeof ev.content === 'string' ? ev.content : '';
+        if (!content) return;
+        // 实时流文本累积: Claude SDK 不发完整 assistant text, 而是连续
+        // stream_delta 推送文本片段。用 ref 累积 + 100ms 定时器批量 flush
+        // (与 chat 路径 useChatRealtimeHandlers 一致), 用稳定 streamingMsgId
         // 避免 React 因 key 变化销毁/重建 DOM。
-        accumulatedRef.current += content;
+        applyReducer(ev);
         if (!streamTimerRef.current) {
           streamTimerRef.current = window.setTimeout(() => {
             streamTimerRef.current = null;
-            const text = accumulatedRef.current;
-            setMessages((cur) => {
-              const last = cur[cur.length - 1];
-              if (last && last.id === streamingMsgIdRef.current) {
-                return [...cur.slice(0, -1), { ...last, text, ts: Date.now() }];
-              }
-              return [
-                ...cur,
-                {
-                  id: streamingMsgIdRef.current,
-                  role: 'assistant',
-                  kind: 'text' as const,
-                  text,
-                  ts: Date.now(),
-                },
-              ];
-            });
+            applyReducer({ kind: 'stream_end' });
           }, 100);
         }
-      } else if (ev.kind === 'complete') {
-        setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
-        // 流结束: 刷新剩余累积文本,重置 accum state
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
-        }
-        const remaining = accumulatedRef.current;
-        if (remaining) {
-          setMessages((cur) => {
-            const last = cur[cur.length - 1];
-            if (last && last.id === streamingMsgIdRef.current) {
-              return [...cur.slice(0, -1), { ...last, text: remaining, ts: Date.now() }];
-            }
-            return [
-              ...cur,
-              {
-                id: streamingMsgIdRef.current,
-                role: 'assistant',
-                kind: 'text' as const,
-                text: remaining,
-                ts: Date.now(),
-              },
-            ];
-          });
-        }
-        accumulatedRef.current = '';
-        streamingMsgIdRef.current = `streaming-${Date.now()}`;
-      } else if (ev.kind === 'stream_end') {
-        // 内容块边界: flush 但不重置 id(下一个 content block 继续追到
-        // 同一 streaming 气泡),与 chat 路径的 stream_end 语义一致。
-        if (streamTimerRef.current) {
-          clearTimeout(streamTimerRef.current);
-          streamTimerRef.current = null;
-        }
-        const text = accumulatedRef.current;
-        if (text) {
-          setMessages((cur) => {
-            const last = cur[cur.length - 1];
-            if (last && last.id === streamingMsgIdRef.current) {
-              return [...cur.slice(0, -1), { ...last, text, ts: Date.now() }];
-            }
-            return [
-              ...cur,
-              {
-                id: streamingMsgIdRef.current,
-                role: 'assistant',
-                kind: 'text' as const,
-                text,
-                ts: Date.now(),
-              },
-            ];
-          });
-        }
-        accumulatedRef.current = '';
+        return;
       }
+
+      if (ev.kind === 'text' && ev.role === 'assistant') {
+        // 终态 assistant text 自带最终内容, 取消 pending flush timer,
+        // 让 reducer 用这份内容替换 streaming bubble, 避免双渲染。
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+        applyReducer(ev);
+        return;
+      }
+
+      if (ev.kind === 'stream_end' || ev.kind === 'complete') {
+        if (streamTimerRef.current) {
+          clearTimeout(streamTimerRef.current);
+          streamTimerRef.current = null;
+        }
+        applyReducer(ev);
+        if (ev.kind === 'complete') {
+          setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
+        }
+        return;
+      }
+
+      // text (user) / tool_use / tool_result —— 直接交给 reducer
+      applyReducer(ev);
       // thinking → silently dropped (no render target yet).
     });
   }, [subscribe, problemId]);

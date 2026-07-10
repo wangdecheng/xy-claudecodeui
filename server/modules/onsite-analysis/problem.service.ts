@@ -302,9 +302,27 @@ export const problemService = {
     return record;
   },
 
-  async list(): Promise<ProblemListItem[]> {
+  async list(userId?: number | null): Promise<ProblemListItem[]> {
     const root = resolveOnsiteRoot();
     if (!existsSync(root)) return [];
+
+    // 多用户隔离：按 sessions 表的 user_id 过滤可见的 problem id。
+    // sessions.session_id 与 onsite_problems.id 是 1:1 关系
+    // （见 problemService.create 里 sessionsDb.createOnsiteSession(record.id, ...)）。
+    //
+    // 可见性规则（与 c411c99 引入的 sessions COALESCE 语义一致）：
+    //  - userId 为 null（平台模式 / 单用户模式）→ 不过滤，全部可见。
+    //  - userId 不为 null → 仅保留 `sessions.user_id = ? OR user_id IS NULL`
+    //    的 problem。
+    //  - 磁盘上存在但 sessions 表里完全没有对应行（孤儿 problem，通常是
+    //    watcher 还没建 sessions 行的瞬态，或迁移前老数据）→ 视为公开，
+    //    对所有登录用户可见，避免老数据被吞。
+    let visibleIds: Set<string> | null = null;
+    let allIds: Set<string> | null = null;
+    if (userId != null) {
+      visibleIds = sessionsDb.getVisibleOnsiteSessionIds(userId);
+      allIds = sessionsDb.getAllOnsiteSessionIds();
+    }
 
     const entries = await readdir(root, { withFileTypes: true });
     const items: ProblemListItem[] = [];
@@ -312,6 +330,15 @@ export const problemService = {
     for (const entry of entries) {
       if (!entry.isDirectory()) continue;
       if (!YYYYMMDD_PREFIX_REGEX.test(entry.name)) continue;
+
+      const id = deriveIdFromDirName(entry.name);
+      // 多用户隔离过滤：仅在过滤模式下生效
+      if (visibleIds !== null) {
+        // 孤儿 problem（sessions 表里没有对应行）→ 公开可见
+        // 其余 → 必须在 visibleIds 里才返回
+        const isOrphan = allIds !== null && !allIds.has(id);
+        if (!isOrphan && !visibleIds.has(id)) continue;
+      }
 
       const dirPath = path.join(root, entry.name);
       const jsonPath = path.join(dirPath, 'problem.json');
@@ -350,7 +377,7 @@ export const problemService = {
       }
 
       items.push({
-        id: deriveIdFromDirName(entry.name),
+        id,
         customer,
         third_bridge_branch: thirdBridgeBranch,
         iteration: iteration ?? resolveDefaultIteration(),

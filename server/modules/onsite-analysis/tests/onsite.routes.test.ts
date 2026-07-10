@@ -29,15 +29,13 @@ import onsiteRoutes from '../onsite.routes.js';
 import { _setConfigForTests, resetConfig, type ConfigPayload } from '../config.service.js';
 import { onsiteBroadcast } from '../onsite-broadcast.js';
 
-function buildApp(): express.Express {
+function buildApp(user?: { id: number; username: string }): express.Express {
   const app = express();
   app.use(express.json());
   // Auth shim that injects a fake user so we don't need real JWT.
   app.use((req, _res, next) => {
-    (req as express.Request & { user?: { id: number; username: string } }).user = {
-      id: 1,
-      username: 'tester',
-    };
+    (req as express.Request & { user?: { id: number; username: string } }).user =
+      user ?? { id: 1, username: 'tester' };
     next();
   });
   app.use('/api/onsite', onsiteRoutes);
@@ -139,6 +137,189 @@ test('GET /api/onsite/problems 返 200 + 数组,排序 blocked→analyzing→pen
     // 走的是 nextAvailableDirName 路径,目录名是 todayYyyymmdd-...
     // 两条 record 应当都在
     assert.ok(response.body.problems.length >= 2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/onsite/problems — 多用户隔离(回归 admin 越权 bug)
+// ---------------------------------------------------------------------------
+//
+// 背景: admin 用户登录后能看到其他用户的 problem。根因是 GET /problems
+// 路由没把 req.user.id 传给 problemService.list(),导致 disk 扫到所有
+// 目录全返。修复后,登录用户仅看到自己创建的 problem + user_id IS NULL
+// 的公开 problem。
+
+test('GET /problems 仅返回当前登录用户的 problem (按 user_id 隔离)', async () => {
+  await withIsolatedEnv(async () => {
+    const { problemService } = await import('../problem.service.js');
+    const { userDb } = await import('@/modules/database/repositories/users.js');
+    const root = process.env.ONSITE_ROOT!;
+
+    // 建两个用户,各自 create 一条 problem。create 走 eager session
+    // 路径,会自动写 sessions 行并绑定 user_id。
+    const alice = userDb.createUser('alice', 'hash');
+    const bob = userDb.createUser('bob', 'hash');
+    const aliceId = Number(alice.id);
+    const bobId = Number(bob.id);
+
+    const aliceProblem = await problemService.create({
+      customer: 'AliceCo',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: root + '/AliceCo',
+      description: 'alice 的现场反馈',
+      userId: aliceId,
+    });
+    const bobProblem = await problemService.create({
+      customer: 'BobCo',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: root + '/BobCo',
+      description: 'bob 的现场反馈',
+      userId: bobId,
+    });
+
+    // alice 登录 → 只看到 alice 的
+    const aliceApp = buildApp({ id: aliceId, username: 'alice' });
+    const aliceRes = await request(aliceApp).get('/api/onsite/problems');
+    assert.equal(aliceRes.status, 200);
+    const aliceIds = (aliceRes.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(aliceIds.includes(aliceProblem.id), 'alice 应看到自己的 problem');
+    assert.ok(
+      !aliceIds.includes(bobProblem.id),
+      `alice 不应看到 bob 的 problem,实际看到 ids=${aliceIds.join(',')}`,
+    );
+
+    // bob 登录 → 只看到 bob 的
+    const bobApp = buildApp({ id: bobId, username: 'bob' });
+    const bobRes = await request(bobApp).get('/api/onsite/problems');
+    assert.equal(bobRes.status, 200);
+    const bobIds = (bobRes.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(bobIds.includes(bobProblem.id), 'bob 应看到自己的 problem');
+    assert.ok(!bobIds.includes(aliceProblem.id), 'bob 不应看到 alice 的 problem');
+  });
+});
+
+test('GET /problems 看得见 user_id IS NULL 的公开 problem (历史数据 / 孤儿)', async () => {
+  await withIsolatedEnv(async () => {
+    const { problemService } = await import('../problem.service.js');
+    const { sessionsDb } = await import('@/modules/database/repositories/sessions.db.js');
+    const { userDb } = await import('@/modules/database/repositories/users.js');
+    const { getConnection } = await import('@/modules/database/connection.js');
+    const root = process.env.ONSITE_ROOT!;
+
+    const alice = userDb.createUser('alice', 'hash');
+    const aliceId = Number(alice.id);
+
+    // alice 创建一个 problem (eager session 会写 user_id=aliceId)
+    const aliceProblem = await problemService.create({
+      customer: 'AliceCo',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: root + '/AliceCo',
+      description: 'alice 自己的',
+      userId: aliceId,
+    });
+
+    // 直接构造一个 sessions 行 user_id=NULL 的 problem,模拟历史数据 / 第三方集成。
+    const publicProblem = await problemService.create({
+      customer: 'PublicCo',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: root + '/PublicCo',
+      description: '公开 problem',
+      userId: aliceId, // 先用 alice 建出 sessions 行
+    });
+    // 把这条 sessions 行的 user_id 改成 NULL(模拟迁移前 NULL 旧数据)
+    const db = getConnection();
+    db.prepare(`UPDATE sessions SET user_id = NULL WHERE session_id = ?`).run(publicProblem.id);
+
+    const aliceApp = buildApp({ id: aliceId, username: 'alice' });
+    const res = await request(aliceApp).get('/api/onsite/problems');
+    assert.equal(res.status, 200);
+    const ids = (res.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(ids.includes(aliceProblem.id), 'alice 应看到自己的 problem');
+    assert.ok(
+      ids.includes(publicProblem.id),
+      `alice 应看到 user_id IS NULL 的公开 problem,实际 ids=${ids.join(',')}`,
+    );
+
+    // 再建一个 bob,验证 bob 也能看到公开 problem,但看不到 alice 的
+    const bob = userDb.createUser('bob', 'hash');
+    const bobId = Number(bob.id);
+    const bobApp = buildApp({ id: bobId, username: 'bob' });
+    const bobRes = await request(bobApp).get('/api/onsite/problems');
+    const bobIds = (bobRes.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(
+      bobIds.includes(publicProblem.id),
+      `bob 也应看到 user_id IS NULL 的公开 problem,实际 ids=${bobIds.join(',')}`,
+    );
+    assert.ok(
+      !bobIds.includes(aliceProblem.id),
+      'bob 不应看到 alice 的私有 problem',
+    );
+  });
+});
+
+test('GET /problems 看得见孤儿 problem (磁盘有目录,sessions 表无行)', async () => {
+  await withIsolatedEnv(async () => {
+    const { mkdir, writeFile } = await import('node:fs/promises');
+    const { userDb } = await import('@/modules/database/repositories/users.js');
+    const root = process.env.ONSITE_ROOT!;
+    const yyyymmdd = todayYyyymmdd();
+
+    // 手工建一个磁盘目录 + problem.json,**完全不写 sessions 行**。
+    // 这是迁移前老数据 / watcher 还没扫到的瞬态,应被视为公开。
+    const dirName = `${yyyymmdd}235959-OrphanCo`;
+    await mkdir(`${root}/${dirName}`, { recursive: true });
+    await writeFile(
+      `${root}/${dirName}/problem.json`,
+      JSON.stringify({
+        id: dirName,
+        customer: 'OrphanCo',
+        iteration: 'master_5.2_3.2',
+        database: 'db01',
+        status: 'analyzing',
+        cwd: `${root}/${dirName}`,
+        description: 'orphan problem',
+      }),
+      'utf8',
+    );
+
+    const alice = userDb.createUser('alice', 'hash');
+    const bob = userDb.createUser('bob', 'hash');
+
+    // alice 看得到
+    const aliceApp = buildApp({ id: Number(alice.id), username: 'alice' });
+    const aliceRes = await request(aliceApp).get('/api/onsite/problems');
+    const aliceIds = (aliceRes.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(
+      aliceIds.includes(dirName),
+      `alice 应看到孤儿 problem,实际 ids=${aliceIds.join(',')}`,
+    );
+
+    // bob 也看得到
+    const bobApp = buildApp({ id: Number(bob.id), username: 'bob' });
+    const bobRes = await request(bobApp).get('/api/onsite/problems');
+    const bobIds = (bobRes.body.problems as Array<{ id: string }>).map((p) => p.id);
+    assert.ok(
+      bobIds.includes(dirName),
+      `bob 也应看到孤儿 problem,实际 ids=${bobIds.join(',')}`,
+    );
+  });
+});
+
+test('GET /problems 缺 req.user.id 返 401 AUTH_USER_ID_MISSING', async () => {
+  await withIsolatedEnv(async () => {
+    // 不挂 auth shim,直接挂路由 —— req.user 不会被注入
+    const app = express().use('/api/onsite', onsiteRoutes);
+    const res = await request(app).get('/api/onsite/problems');
+    assert.equal(res.status, 401);
+    assert.equal(res.body.error, 'AUTH_USER_ID_MISSING');
   });
 });
 

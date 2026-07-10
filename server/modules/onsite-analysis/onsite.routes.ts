@@ -113,9 +113,26 @@ function compareStatus(a: string, b: string): number {
 // GET /api/onsite/problems
 // ---------------------------------------------------------------------------
 
-router.get('/problems', async (_req, res) => {
+router.get('/problems', async (req, res) => {
+  // userId 必传：list 内部按 sessions.user_id 隔离(参见 problemService.list
+  // 与 c411c99 的 sessions COALESCE 语义)。req.user 由 mount 点
+  // authenticateToken 注入,这里解析方式与 POST /problems 一致。
+  type RequestWithUser = Request & { user?: { id?: string | number } };
+  const userIdRaw = (req as RequestWithUser).user?.id;
+  const userId =
+    typeof userIdRaw === 'number'
+      ? userIdRaw
+      : typeof userIdRaw === 'string' && userIdRaw.length > 0
+        ? Number(userIdRaw)
+        : NaN;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(401).json({
+      error: 'AUTH_USER_ID_MISSING',
+      message: 'authenticated user id is required to list onsite problems',
+    });
+  }
   try {
-    const items = await problemService.list();
+    const items = await problemService.list(userId);
     const sorted = [...items].sort((a, b) => compareStatus(a.status, b.status));
     res.json({ problems: sorted });
   } catch (error: unknown) {
