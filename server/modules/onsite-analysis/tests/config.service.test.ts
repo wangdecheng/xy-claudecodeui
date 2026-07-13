@@ -33,12 +33,12 @@ test.beforeEach(() => {
   resetConfig();
 });
 
-test('loadConfig parses 17 customers + 2 iterations from real config', async () => {
+test('loadConfig parses 18 customers + 19 iterations from real config', async () => {
   const cfg = await loadConfig(GOOD_CONFIG);
 
   assert.equal(cfg.status, 'OK');
-  assert.equal(cfg.data.customers.length, 17);
-  assert.equal(cfg.data.iterations.length, 6);
+  assert.equal(cfg.data.customers.length, 18);
+  assert.equal(cfg.data.iterations.length, 19);
   assert.equal(cfg.data.customers[0].label, '其他问题');
   assert.equal(cfg.data.customers[0].branch, null);
   assert.equal(typeof cfg.mtime, 'string');

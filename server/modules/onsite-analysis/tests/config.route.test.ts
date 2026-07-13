@@ -65,7 +65,7 @@ test('GET /api/onsite/config returns 200 + payload when loaded', async () => {
   assert.ok(response.body.data.customers.length >= 13);
   assert.equal(response.body.data.customers[0].label, '其他问题');
   assert.equal(response.body.data.customers[0].branch, null);
-  assert.equal(response.body.data.iterations.length, 6);
+  assert.equal(response.body.data.iterations.length, 19);
 });
 
 test('GET /api/onsite/config sets Cache-Control: no-store header', async () => {
