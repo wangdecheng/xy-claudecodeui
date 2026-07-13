@@ -213,14 +213,12 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   return (
     <div
       data-testid="onsite-new-issue-wizard"
-      onClick={onClose}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 backdrop-blur-sm"
       role="dialog"
       aria-modal="true"
     >
       <form
         onSubmit={handleSubmit}
-        onClick={(e) => e.stopPropagation()}
         className="flex max-h-[calc(100vh-2rem)] w-full max-w-2xl flex-col rounded-lg border border-border bg-card shadow-xl"
       >
         {/* Sticky header — 标题 + X 关闭按钮始终可见,不被滚动条吞掉 */}
