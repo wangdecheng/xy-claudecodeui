@@ -95,8 +95,8 @@ export interface OnsiteFile {
 /** Per-file result returned by POST /problems/:id/files (207 multi-status). */
 export interface UploadResult {
   ok: boolean;
-  original_name: string;
-  unpacked_dir?: string;
+  originalName: string;
+  unpackedDir?: string;
   size?: number;
   error?: string;
 }

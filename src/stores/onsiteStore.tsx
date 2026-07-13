@@ -32,9 +32,6 @@ export interface OnsiteStoredMessage {
 }
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-
-import { authenticatedFetch } from '../utils/api';
-
 import type {
   ConfigPayload,
   OnsiteFile,
@@ -43,6 +40,9 @@ import type {
   ProblemStatus,
   UploadResult,
 } from '@shared/onsite-types';
+
+import { authenticatedFetch } from '../utils/api';
+import { requestOnsiteUpload } from '../utils/onsiteUpload';
 
 export interface OnsiteStoreState {
   problems: ProblemListItem[];
@@ -292,62 +292,34 @@ export function useOnsiteStore(): OnsiteStore {
   const uploadFiles = useCallback(
     async (id: string, files: File[]): Promise<UploadResult[]> => {
       if (files.length === 0) return [];
+      stateRef.current.uploading = { ...stateRef.current.uploading, [id]: 0 };
+      notify();
 
-      const formData = new FormData();
-      for (const file of files) {
-        formData.append('files', file, file.name);
-      }
-
-      // XHR (not fetch) so we can drive `uploading[id]` from onprogress.
-      return await new Promise<UploadResult[]>((resolve) => {
-        const xhr = new XMLHttpRequest();
-        xhr.open('POST', `/api/onsite/problems/${encodeURIComponent(id)}/files`, true);
-
-        const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth-token') : null;
-        if (token) {
-          xhr.setRequestHeader('Authorization', `Bearer ${token}`);
-        }
-
-        xhr.upload.onprogress = (event) => {
-          if (event.lengthComputable && event.total > 0) {
-            const pct = Math.round((event.loaded / event.total) * 100);
-            stateRef.current.uploading = { ...stateRef.current.uploading, [id]: pct };
+      const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth-token') : null;
+      try {
+        const results = await requestOnsiteUpload(id, files, {
+          token,
+          onProgress: (progress) => {
+            stateRef.current.uploading = { ...stateRef.current.uploading, [id]: progress };
             notify();
-          }
-        };
-
-        xhr.onload = () => {
-          // 2xx + 207 → resolve; 4xx/5xx → reject with what we know.
-          try {
-            const body = JSON.parse(xhr.responseText) as { results?: UploadResult[] };
-            if (xhr.status >= 200 && xhr.status < 300) {
-              // Clear progress on success.
-              const next = { ...stateRef.current.uploading };
-              delete next[id];
-              stateRef.current.uploading = next;
-              stateRef.current.lastError = null;
-              notify();
-              resolve(Array.isArray(body.results) ? body.results : []);
-            } else {
-              stateRef.current.lastError = `uploadFiles failed: HTTP ${xhr.status}`;
-              notify();
-              resolve([]);
+          },
+          onRefreshedToken: (refreshedToken) => {
+            if (typeof localStorage !== 'undefined') {
+              localStorage.setItem('auth-token', refreshedToken);
             }
-          } catch (err: unknown) {
-            stateRef.current.lastError = err instanceof Error ? err.message : String(err);
-            notify();
-            resolve([]);
-          }
-        };
-
-        xhr.onerror = () => {
-          stateRef.current.lastError = 'uploadFiles: network error';
-          notify();
-          resolve([]);
-        };
-
-        xhr.send(formData);
-      });
+          },
+        });
+        stateRef.current.lastError = null;
+        return results;
+      } catch (err: unknown) {
+        stateRef.current.lastError = err instanceof Error ? err.message : String(err);
+        throw err;
+      } finally {
+        const next = { ...stateRef.current.uploading };
+        delete next[id];
+        stateRef.current.uploading = next;
+        notify();
+      }
     },
     [notify],
   );

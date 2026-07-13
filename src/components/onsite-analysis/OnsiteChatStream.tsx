@@ -99,6 +99,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const [messages, setMessages] = useState<OnsiteStreamMessage[]>([]);
   const [draft, setDraft] = useState('');
   const [sending, setSending] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
   const [runState, setRunState] = useState(initialOnsiteRunState);
   const [discipline, setDiscipline] = useState<DisciplineState>({
     softening: 0,
@@ -458,8 +459,13 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
     // reset input so the same file can be re-picked later
     e.target.value = '';
     if (picked.length === 0) return;
-    await uploadFiles(problemId, picked);
-    await loadFiles(problemId);
+    setUploadError(null);
+    try {
+      await uploadFiles(problemId, picked);
+      await loadFiles(problemId);
+    } catch (err: unknown) {
+      setUploadError(err instanceof Error ? err.message : String(err));
+    }
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -535,6 +541,14 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       </div>
 
       <footer className="flex shrink-0 flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
+        {uploadError && (
+          <div
+            data-testid="onsite-chat-upload-error"
+            className="rounded-md border border-destructive/40 bg-destructive/10 px-2 py-1 text-[11px] text-destructive"
+          >
+            上传失败：{uploadError}
+          </div>
+        )}
         {/* 交互式工具面板——AskUserQuestion 等权限请求在此渲染 */}
         {pendingPermissions.length > 0 && (
           <div className="mb-2 space-y-2">

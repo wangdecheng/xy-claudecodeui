@@ -20,6 +20,8 @@ import { Upload, X } from 'lucide-react';
 import { useOnsiteStore } from '../../stores/onsiteStore';
 import { cn } from '../../lib/utils';
 
+import AnalysisFilesRow from './AnalysisFilesRow';
+
 export const MAX_FILES = 20;
 export const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB
 
@@ -38,13 +40,17 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
   const { t } = useTranslation(['onsite']);
   const store = useOnsiteStore();
   const uploadFiles = store.uploadFiles;
+  const loadFiles = store.loadFiles;
   const getUploadProgress = store.getUploadProgress;
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [dragging, setDragging] = useState(false);
   const [warnings, setWarnings] = useState<WarningEntry[]>([]);
+  const [selectedNames, setSelectedNames] = useState<string[]>([]);
+  const [uploadState, setUploadState] = useState<'idle' | 'uploading' | 'success' | 'error'>('idle');
 
   const progress = problemId ? getUploadProgress(problemId) : -1;
   const uploading = progress >= 0 && progress < 100;
+  const uploadedFiles = store.getFiles(problemId);
 
   const pushWarning = (text: string) => {
     const id = Date.now() + Math.random();
@@ -85,11 +91,21 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
     }
     const trimmed = trimFiles(raw);
     if (trimmed.length === 0) return;
+    setSelectedNames(trimmed.map((file) => file.name));
+    setUploadState('uploading');
     try {
-      await uploadFiles(problemId, trimmed);
-      onUploaded?.();
+      const results = await uploadFiles(problemId, trimmed);
+      await loadFiles(problemId);
+      const failed = results.filter((result) => !result.ok);
+      const successful = results.filter((result) => result.ok);
+      for (const result of failed) {
+        pushWarning(`${result.originalName}: ${result.error || '解压失败'}`);
+      }
+      setUploadState(successful.length > 0 ? 'success' : 'error');
+      if (successful.length > 0) onUploaded?.();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
+      setUploadState('error');
       pushWarning(`${t('onsite:error.uploadFailed')}: ${message}`);
     }
   };
@@ -148,6 +164,7 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
           multiple
           className="hidden"
           data-testid="onsite-log-uploader-input"
+          onClick={(e) => e.stopPropagation()}
           onChange={(e) => {
             const files = Array.from(e.target.files ?? []);
             void handleFiles(files);
@@ -156,6 +173,37 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
           }}
         />
       </div>
+
+      {selectedNames.length > 0 && (
+        <div
+          data-testid="onsite-upload-selection"
+          className="rounded-md border border-border bg-muted/30 px-2 py-1.5 text-[11px] text-foreground"
+        >
+          <span className="font-medium">
+            {uploadState === 'uploading'
+              ? t('onsite:wizard.uploading', { defaultValue: '正在上传' })
+              : uploadState === 'success'
+                ? t('onsite:wizard.uploadSuccess', { defaultValue: '上传完成' })
+                : uploadState === 'error'
+                  ? t('onsite:wizard.uploadError', { defaultValue: '上传未完成' })
+                  : t('onsite:wizard.selectedFiles', { defaultValue: '已选择' })}
+            ：
+          </span>
+          <span className="break-all">{selectedNames.join('、')}</span>
+        </div>
+      )}
+
+      {uploadedFiles.length > 0 && (
+        <div data-testid="onsite-uploaded-files" className="flex flex-col gap-1">
+          <span className="text-[11px] font-medium text-foreground">
+            {t('onsite:wizard.uploadedFiles', {
+              count: uploadedFiles.length,
+              defaultValue: `已上传文件（${uploadedFiles.length}）`,
+            })}
+          </span>
+          <AnalysisFilesRow files={uploadedFiles} />
+        </div>
+      )}
 
       <p
         data-testid="onsite-dz-note"
