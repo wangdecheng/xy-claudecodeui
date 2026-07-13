@@ -18,11 +18,12 @@
 
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
+
 import express, { type Request, type Response } from 'express';
 import multer from 'multer';
 
-import { onsiteFilesDb } from '@/modules/database/repositories/onsite-files.db.js';
-import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+import { onsiteFilesDb, onsiteProblemsDb } from '@/modules/database/index.js';
+
 import { getConfig } from './config.service.js';
 import { disciplineSofteningMiddleware } from './discipline/discipline-softening.middleware.js';
 import {
@@ -32,6 +33,10 @@ import {
   type UploadedFile,
 } from './log-unpack.service.js';
 import { onsiteBroadcast } from './onsite-broadcast.js';
+import {
+  authorizeOnsiteProblem,
+  readAuthenticatedUserId,
+} from './problem-ownership.service.js';
 import {
   CwdEscapeError,
   DescriptionRequiredError,
@@ -50,6 +55,39 @@ import {
 } from './state-machine.service.js';
 
 const router = express.Router();
+
+type RequestWithUser = Request & {
+  user?: { id?: string | number; userId?: string | number };
+};
+
+// Every onsite problem sub-resource uses :id. Centralizing authorization in
+// router.param keeps future handlers from accidentally bypassing the owner
+// check and ensures uploads are rejected before Multer writes temp files.
+router.param('id', (req: Request, res: Response, next, id: string) => {
+  const userId = readAuthenticatedUserId((req as RequestWithUser).user);
+  if (userId === null) {
+    return res.status(401).json({
+      error: 'AUTH_USER_ID_MISSING',
+      message: 'authenticated user id is required to access onsite problems',
+    });
+  }
+
+  const authorization = authorizeOnsiteProblem(id, userId);
+  if (!authorization.ok) {
+    if (authorization.reason === 'not_found') {
+      return res.status(404).json({
+        error: 'PROBLEM_NOT_FOUND',
+        message: `Problem not found: ${id}`,
+      });
+    }
+    return res.status(403).json({
+      error: 'PROBLEM_FORBIDDEN',
+      message: 'You are not allowed to access this onsite problem.',
+    });
+  }
+
+  return next();
+});
 
 // ---------------------------------------------------------------------------
 // Multer upload (Batch 5.4) — diskStorage under os.tmpdir(), max 20 files,
@@ -117,15 +155,8 @@ router.get('/problems', async (req, res) => {
   // userId 必传：list 内部按 sessions.user_id 隔离(参见 problemService.list
   // 与 c411c99 的 sessions COALESCE 语义)。req.user 由 mount 点
   // authenticateToken 注入,这里解析方式与 POST /problems 一致。
-  type RequestWithUser = Request & { user?: { id?: string | number } };
-  const userIdRaw = (req as RequestWithUser).user?.id;
-  const userId =
-    typeof userIdRaw === 'number'
-      ? userIdRaw
-      : typeof userIdRaw === 'string' && userIdRaw.length > 0
-        ? Number(userIdRaw)
-        : NaN;
-  if (!Number.isInteger(userId) || userId <= 0) {
+  const userId = readAuthenticatedUserId((req as RequestWithUser).user);
+  if (userId === null) {
     return res.status(401).json({
       error: 'AUTH_USER_ID_MISSING',
       message: 'authenticated user id is required to list onsite problems',
@@ -208,15 +239,8 @@ router.post('/problems', (req: Request, res: Response) => {
   // req.user 由 server/middleware/auth.js 的 authenticateToken 挂上,
   // 这里走 number 优先 + 字符串兜底, 与其他路由(confirm-root-cause 等)
   // 解析方式一致。
-  type RequestWithUser = Request & { user?: { id?: string | number } };
-  const userIdRaw = (req as RequestWithUser).user?.id;
-  const userId =
-    typeof userIdRaw === 'number'
-      ? userIdRaw
-      : typeof userIdRaw === 'string' && userIdRaw.length > 0
-        ? Number(userIdRaw)
-        : NaN;
-  if (!Number.isInteger(userId) || userId <= 0) {
+  const userId = readAuthenticatedUserId((req as RequestWithUser).user);
+  if (userId === null) {
     return res.status(401).json({
       error: 'AUTH_USER_ID_MISSING',
       message: 'authenticated user id is required to create an onsite problem',
@@ -261,7 +285,7 @@ router.post('/problems', (req: Request, res: Response) => {
 // ---------------------------------------------------------------------------
 
 router.get('/problems/:id', async (req, res) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
   try {
     const record = await problemService.getById(id);
     if (!record) {
@@ -285,7 +309,7 @@ router.get('/problems/:id', async (req, res) => {
 // 已经过创建期校验,这里是防御性二次校验)。
 
 router.delete('/problems/:id', async (req, res) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
   try {
     const result = await problemService.remove(id);
     if (!result.deleted) {
@@ -314,11 +338,10 @@ router.delete('/problems/:id', async (req, res) => {
 type PatchBody = {
   status?: unknown;
   reason?: unknown;
-  actor_id?: unknown;
 };
 
 router.patch('/problems/:id', (req: Request, res: Response) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
   const body = (req.body ?? {}) as PatchBody;
 
   // 1) reason 必给且 ≥ 8 字符
@@ -335,10 +358,8 @@ router.patch('/problems/:id', (req: Request, res: Response) => {
 
   const to = body.status as ProblemStatus;
   const reason = body.reason as string;
-  const actorId =
-    typeof body.actor_id === 'string' && body.actor_id.length > 0
-      ? (body.actor_id as string)
-      : null;
+  const authenticatedUserId = readAuthenticatedUserId((req as RequestWithUser).user);
+  const actorId = authenticatedUserId === null ? null : String(authenticatedUserId);
 
   applyState(id, to, reason, actorId)
     .then((result) => {
@@ -396,7 +417,7 @@ type ConfirmRootCauseBody = {
 };
 
 router.post('/problems/:id/confirm-root-cause', (req: Request, res: Response) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
   const body = (req.body ?? {}) as ConfirmRootCauseBody;
 
   // 1) root_cause_text 非空
@@ -418,11 +439,8 @@ router.post('/problems/:id/confirm-root-cause', (req: Request, res: Response) =>
 
   const rootCauseText = body.root_cause_text as string;
   const reason = body.reason as string;
-  const actorId =
-    typeof (req as Request & { user?: { id?: string | number } }).user?.id === 'string' ||
-    typeof (req as Request & { user?: { id?: string | number } }).user?.id === 'number'
-      ? String((req as Request & { user?: { id?: string | number } }).user!.id)
-      : null;
+  const authenticatedUserId = readAuthenticatedUserId((req as RequestWithUser).user);
+  const actorId = authenticatedUserId === null ? null : String(authenticatedUserId);
 
   // 3) 软化词闸门 — 命中 → 422,不调 StateMachine
   const matches = disciplineSofteningMiddleware.findWords(rootCauseText);
@@ -513,7 +531,7 @@ router.post('/problems/:id/files', (req, res, next) => {
 });
 
 async function handleFileUpload(req: Request, res: Response, _next: express.NextFunction): Promise<void> {
-  const id = req.params.id;
+  const id = String(req.params.id);
   const files = (req.files as Express.Multer.File[] | undefined) ?? [];
 
   if (files.length === 0) {
@@ -597,7 +615,7 @@ async function handleFileUpload(req: Request, res: Response, _next: express.Next
 // ---------------------------------------------------------------------------
 
 router.get('/problems/:id/files', async (req, res) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
 
   try {
     const problem = await problemService.getById(id);
@@ -627,7 +645,7 @@ router.get('/problems/:id/files', async (req, res) => {
 // 非空就跳过磁盘,用户消息和 tool_use(AskUserQuestion 等)会全部丢失。
 
 router.get('/problems/:id/messages', async (req, res) => {
-  const id = req.params.id;
+  const id = String(req.params.id);
 
   try {
     const problem = await problemService.getById(id);

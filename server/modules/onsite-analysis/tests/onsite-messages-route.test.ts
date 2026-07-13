@@ -20,6 +20,7 @@ import request from 'supertest';
 import test from 'node:test';
 
 import { closeConnection } from '@/modules/database/connection.js';
+import { userDb } from '@/modules/database/repositories/users.js';
 import { initSchemaWithMigrations } from '@/modules/database/tests/helpers/test-schema.js';
 
 import onsiteRoutes from '../onsite.routes.js';
@@ -64,6 +65,7 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
 
   closeConnection();
   initSchemaWithMigrations();
+  userDb.createUser('tester', 'hash');
   _setConfigForTests(samplePayload);
   messagesStore._clearAllForTests();
 

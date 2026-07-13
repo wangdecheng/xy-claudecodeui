@@ -122,7 +122,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     third_bridge_branch TEXT,
     iteration TEXT,
     database TEXT,
-    -- 多用户隔离：会话归属用户，NULL 表示公开（旧数据/观察者创建）
+    -- 会话执行归属；NULL 仅表示未归属历史数据，不代表公开访问。
     user_id INTEGER,
     PRIMARY KEY (session_id),
     FOREIGN KEY (project_path) REFERENCES projects(project_path)
@@ -149,7 +149,11 @@ CREATE TABLE IF NOT EXISTS onsite_problems (
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
     mtime TEXT,
-    root_cause_text TEXT
+    root_cause_text TEXT,
+    -- 现场问题访问控制的权威 owner。迁移期允许 NULL，表示待人工认领；
+    -- 应用层新建问题必须写入认证用户 id，普通用户不可访问 NULL owner。
+    owner_user_id INTEGER,
+    FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE RESTRICT
 );
 `;
 
@@ -284,6 +288,7 @@ ${ONSITE_DISCIPLINE_LOG_TABLE_SCHEMA_SQL}
 CREATE INDEX IF NOT EXISTS idx_sessions_kind_cwd ON sessions(kind, cwd);
 CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd);
 CREATE INDEX IF NOT EXISTS idx_onsite_problems_status ON onsite_problems(status);
+-- owner index is created in migrations after legacy tables gain owner_user_id.
 CREATE INDEX IF NOT EXISTS idx_onsite_files_problem_id ON onsite_files(problem_id);
 CREATE INDEX IF NOT EXISTS idx_onsite_state_audit_problem_id ON onsite_state_audit(problem_id);
 CREATE INDEX IF NOT EXISTS idx_onsite_discipline_log_problem_id ON onsite_discipline_log(problem_id);

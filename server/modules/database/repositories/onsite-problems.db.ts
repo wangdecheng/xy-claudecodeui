@@ -25,23 +25,39 @@ export type OnsiteProblemRecord = {
   mtime: string | null;
   root_cause_text: string | null;
   description: string;
+  owner_user_id: number | null;
 };
 
 export type OnsiteProblemListItem = OnsiteProblemRecord;
 
-type ProblemInsertInput = Omit<OnsiteProblemRecord, 'created_at' | 'updated_at' | 'mtime' | 'root_cause_text'>;
+export type OnsiteProblemAccessRecord = Pick<
+  OnsiteProblemRecord,
+  'id' | 'owner_user_id' | 'cwd'
+>;
+
+type ProblemInsertInput = Omit<
+  OnsiteProblemRecord,
+  | 'created_at'
+  | 'updated_at'
+  | 'mtime'
+  | 'root_cause_text'
+  | 'description'
+  | 'owner_user_id'
+> & { description?: string; owner_user_id?: number | null };
 
 const INSERT_SQL = `
 INSERT INTO onsite_problems (
-  id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path, description
+  id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path,
+  description, owner_user_id
 ) VALUES (
-  @id, @customer, @third_bridge_branch, @iteration, @database, @status, @cwd, @problem_json_path, @description
+  @id, @customer, @third_bridge_branch, @iteration, @database, @status, @cwd, @problem_json_path,
+  @description, @owner_user_id
 )
 `;
 
 const SELECT_COLUMNS = `
 id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path,
-created_at, updated_at, mtime, root_cause_text, description
+created_at, updated_at, mtime, root_cause_text, description, owner_user_id
 `;
 
 export const onsiteProblemsDb = {
@@ -57,6 +73,7 @@ export const onsiteProblemsDb = {
       cwd: p.cwd,
       problem_json_path: p.problem_json_path,
       description: p.description ?? '',
+      owner_user_id: p.owner_user_id ?? null,
     });
     return p.id;
   },
@@ -75,6 +92,30 @@ export const onsiteProblemsDb = {
       .prepare(`SELECT ${SELECT_COLUMNS} FROM onsite_problems WHERE cwd = ?`)
       .get(cwd) as OnsiteProblemRecord | undefined;
     return row ?? null;
+  },
+
+  findAccessRecord(id: string): OnsiteProblemAccessRecord | null {
+    const db = getConnection();
+    const row = db
+      .prepare(
+        `SELECT id, owner_user_id, cwd
+           FROM onsite_problems
+          WHERE id = ?`,
+      )
+      .get(id) as OnsiteProblemAccessRecord | undefined;
+    return row ?? null;
+  },
+
+  listByOwner(ownerUserId: number): OnsiteProblemListItem[] {
+    const db = getConnection();
+    return db
+      .prepare(
+        `SELECT ${SELECT_COLUMNS}
+           FROM onsite_problems
+          WHERE owner_user_id = ?
+          ORDER BY datetime(created_at) DESC, id DESC`,
+      )
+      .all(ownerUserId) as OnsiteProblemListItem[];
   },
 
   list(): OnsiteProblemListItem[] {

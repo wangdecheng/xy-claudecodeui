@@ -2,8 +2,9 @@
  * ProblemService — writes problem.json on disk under ONSITE_ROOT, and keeps
  * a parallel row in `onsite_problems` for fast listing/audit.
  *
- * Design (D-3): disk is the source of truth. DB write failures are logged
- * as warnings; disk failures throw.
+ * Disk remains the analysis-content source of truth, but the DB row is the
+ * authorization source of truth. Creation therefore fails and rolls back the
+ * new directory when the owner-bearing DB insert fails.
  *
  * Disk layout (per existing CLAUDE.md in customer-onsite-analysis/):
  *   ~/work/customer-onsite-analysis/YYYYMMDDHHMMSS-客户/problem.json
@@ -22,9 +23,8 @@ import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
-import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
-import { sessionsDb } from '@/modules/database/repositories/sessions.db.js';
-import { userDb } from '@/modules/database/repositories/users.js';
+import { onsiteProblemsDb, sessionsDb, userDb } from '@/modules/database/index.js';
+
 import { getConfig } from './config.service.js';
 import { messagesStore } from './messages-store.service.js';
 
@@ -58,6 +58,15 @@ export class DescriptionRequiredError extends Error {
   constructor() {
     super('问题描述不能为空');
     this.name = 'DescriptionRequiredError';
+  }
+}
+
+export class ProblemOwnerRequiredError extends Error {
+  readonly code = 'PROBLEM_OWNER_REQUIRED';
+
+  constructor() {
+    super('A valid authenticated user is required to create an onsite problem');
+    this.name = 'ProblemOwnerRequiredError';
   }
 }
 
@@ -171,6 +180,22 @@ export const problemService = {
     }
     const storedDescription = trimmedDescription.slice(0, 2000);
 
+    // Problem ownership is security-critical and must be known before any
+    // filesystem side effect. Route callers pass req.user.id explicitly;
+    // scripts retain the existing single-user fallback.
+    let resolvedUserId: number | null = null;
+    if (typeof input.userId === 'number' && Number.isInteger(input.userId) && input.userId > 0) {
+      resolvedUserId = input.userId;
+    } else {
+      try {
+        const firstUser = userDb.getFirstUser();
+        if (firstUser) resolvedUserId = Number(firstUser.id);
+      } catch {
+        /* handled below */
+      }
+    }
+    if (resolvedUserId === null) throw new ProblemOwnerRequiredError();
+
     const today = new Date();
     // 时间前缀升级为 yyyymmddHHmmss, 关闭"删除后秒内重建"导致的 ID 复用窗口。
     // 14 位前缀里, yyyy-mm-dd 段可被 input.date 覆盖, HHmmss 段始终取自 now,
@@ -243,10 +268,22 @@ export const problemService = {
         cwd: record.cwd,
         problem_json_path: record.problem_json_path,
         description: storedDescription,
+        owner_user_id: resolvedUserId,
       });
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : String(err);
-      console.warn(`[problem.service] DB insert failed for ${record.id}; disk is authoritative: ${message}`);
+      console.warn(`[problem.service] owner-bearing DB insert failed for ${record.id}: ${message}`);
+      try {
+        await rm(dirPath, { recursive: true, force: true });
+      } catch (cleanupError: unknown) {
+        const cleanupMessage = cleanupError instanceof Error
+          ? cleanupError.message
+          : String(cleanupError);
+        console.warn(
+          `[problem.service] failed to roll back directory ${dirPath}: ${cleanupMessage}`,
+        );
+      }
+      throw new Error('Failed to persist onsite problem ownership');
     }
 
     // Eager session: 在 create 这一刻就把 sessions 行建好, 关闭
@@ -256,47 +293,25 @@ export const problemService = {
     // AI 无回应。新行为: problem 一建, session 就到位; 旧路径上的
     // ensureOnsiteSession 仍保留为幂等兜底(重连/重启场景)。
     //
-    // userId 解析: input.userId 优先; 缺省取平台首用户(单用户模式)。
-    // 拿不到任何 user (e.g. 测试 DB 空) 时 console.warn 兜底, 不让 create 抛
-    // —— 与 onsite_problems DB insert 同等级, disk 仍是 source of truth。
-    let resolvedUserId: number | null = null;
-    if (typeof input.userId === 'number' && Number.isInteger(input.userId) && input.userId > 0) {
-      resolvedUserId = input.userId;
-    } else {
-      try {
-        const firstUser = userDb.getFirstUser();
-        if (firstUser) resolvedUserId = Number(firstUser.id);
-      } catch {
-        /* ignore — fall through to no-user path */
-      }
-    }
-    if (resolvedUserId === null) {
-      console.warn(
-        `[problem.service] eager session skipped for ${record.id}: no userId available ` +
-          `(input.userId missing and userDb.getFirstUser() returned no user); ` +
-          `chat will rely on the lazy ensureOnsiteSession path`,
+    try {
+      sessionsDb.createOnsiteSession(
+        record.id,
+        'claude',
+        dirPath,
+        {
+          cwd: dirPath,
+          third_bridge_branch: record.third_bridge_branch,
+          iteration: record.iteration,
+          database: record.database,
+        },
+        resolvedUserId,
       );
-    } else {
-      try {
-        sessionsDb.createOnsiteSession(
-          record.id,
-          'claude',
-          dirPath,
-          {
-            cwd: dirPath,
-            third_bridge_branch: record.third_bridge_branch,
-            iteration: record.iteration,
-            database: record.database,
-          },
-          resolvedUserId,
-        );
-      } catch (err: unknown) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.warn(
-          `[problem.service] eager session create failed for ${record.id}; ` +
-            `fall back to lazy ensureOnsiteSession: ${message}`,
-        );
-      }
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.warn(
+        `[problem.service] eager session create failed for ${record.id}; ` +
+          `fall back to lazy ensureOnsiteSession: ${message}`,
+      );
     }
 
     return record;
@@ -306,22 +321,24 @@ export const problemService = {
     const root = resolveOnsiteRoot();
     if (!existsSync(root)) return [];
 
-    // 多用户隔离：按 sessions 表的 user_id 过滤可见的 problem id。
-    // sessions.session_id 与 onsite_problems.id 是 1:1 关系
-    // （见 problemService.create 里 sessionsDb.createOnsiteSession(record.id, ...)）。
-    //
-    // 可见性规则（与 c411c99 引入的 sessions COALESCE 语义一致）：
-    //  - userId 为 null（平台模式 / 单用户模式）→ 不过滤，全部可见。
-    //  - userId 不为 null → 仅保留 `sessions.user_id = ? OR user_id IS NULL`
-    //    的 problem。
-    //  - 磁盘上存在但 sessions 表里完全没有对应行（孤儿 problem，通常是
-    //    watcher 还没建 sessions 行的瞬态，或迁移前老数据）→ 视为公开，
-    //    对所有登录用户可见，避免老数据被吞。
-    let visibleIds: Set<string> | null = null;
-    let allIds: Set<string> | null = null;
+    // Authenticated callers are filtered by the stable problem owner before
+    // touching disk. NULL-owner rows and disk-only orphan directories are
+    // absent by construction. The no-user branch below is retained only for
+    // internal legacy tooling/tests and is never used by the authenticated
+    // REST route.
     if (userId != null) {
-      visibleIds = sessionsDb.getVisibleOnsiteSessionIds(userId);
-      allIds = sessionsDb.getAllOnsiteSessionIds();
+      return onsiteProblemsDb.listByOwner(userId).map((row) => ({
+        id: row.id,
+        customer: row.customer,
+        third_bridge_branch: row.third_bridge_branch,
+        iteration: row.iteration,
+        database: row.database,
+        status: row.status,
+        cwd: row.cwd,
+        problem_json_path: row.problem_json_path,
+        description: row.description,
+        created_at: row.created_at,
+      }));
     }
 
     const entries = await readdir(root, { withFileTypes: true });
@@ -332,13 +349,6 @@ export const problemService = {
       if (!YYYYMMDD_PREFIX_REGEX.test(entry.name)) continue;
 
       const id = deriveIdFromDirName(entry.name);
-      // 多用户隔离过滤：仅在过滤模式下生效
-      if (visibleIds !== null) {
-        // 孤儿 problem（sessions 表里没有对应行）→ 公开可见
-        // 其余 → 必须在 visibleIds 里才返回
-        const isOrphan = allIds !== null && !allIds.has(id);
-        if (!isOrphan && !visibleIds.has(id)) continue;
-      }
 
       const dirPath = path.join(root, entry.name);
       const jsonPath = path.join(dirPath, 'problem.json');

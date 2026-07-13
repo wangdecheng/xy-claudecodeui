@@ -10,6 +10,11 @@ export { credentialsDb } from '@/modules/database/repositories/credentials.js';
 export { githubTokensDb } from '@/modules/database/repositories/github-tokens.js';
 export { notificationChannelEndpointsDb } from '@/modules/database/repositories/notification-channel-endpoints.js';
 export { notificationPreferencesDb } from '@/modules/database/repositories/notification-preferences.js';
+export { onsiteFilesDb } from '@/modules/database/repositories/onsite-files.db.js';
+export {
+  onsiteProblemsDb,
+  type OnsiteProblemAccessRecord,
+} from '@/modules/database/repositories/onsite-problems.db.js';
 export { projectsDb } from '@/modules/database/repositories/projects.db.js';
 export { pushSubscriptionsDb } from '@/modules/database/repositories/push-subscriptions.js';
 export { scanStateDb } from '@/modules/database/repositories/scan-state.db.js';

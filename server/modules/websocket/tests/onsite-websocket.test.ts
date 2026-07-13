@@ -65,17 +65,26 @@ async function withIsolatedEnv(runTest: () => void | Promise<void>): Promise<voi
 // validateOnsiteHelloFrame — 纯函数测试
 // ---------------------------------------------------------------------------
 
-test('validateOnsiteHelloFrame: kind=onsite + 合法 problemId/cwd 返 ok', () => {
+test('validateOnsiteHelloFrame: 合法 frame 返 ok 且忽略客户端伪造的 userId', () => {
   const root = '/data/customer-onsite';
   const result = validateOnsiteHelloFrame(
-    { kind: ONSITE_HELLO_KIND, problemId: '20260704-X', cwd: `${root}/20260704-X`, userId: 'u1' },
+    {
+      kind: ONSITE_HELLO_KIND,
+      problemId: '20260704-X',
+      cwd: `${root}/20260704-X`,
+      userId: 'forged-client-user',
+    },
     root,
   );
   assert.equal(result.ok, true);
   if (result.ok) {
     assert.equal(result.payload.problemId, '20260704-X');
     assert.equal(result.payload.cwd, path.resolve(`${root}/20260704-X`));
-    assert.equal(result.payload.userId, 'u1');
+    assert.equal(
+      'userId' in result.payload,
+      false,
+      '授权身份只能来自 authenticated WebSocket request，不能进入 hello payload',
+    );
   }
 });
 

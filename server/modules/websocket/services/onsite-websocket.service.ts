@@ -7,7 +7,7 @@
  * 设计要点:
  *  - /onsite/ws 与 /ws 是**不同 path**,但复用同一个 WebSocketServer 实例
  *    (由 websocket-server.service.ts 在 wss.on('connection', ...) 路由)
- *  - 首帧必须是 { kind: 'onsite', problemId, cwd, userId }
+ *  - 首帧必须是 { kind: 'onsite', problemId, cwd }；身份只取认证 request
  *  - validateOnsiteHelloFrame 是纯函数,易测
  *  - 验证失败 → ws.close(4001, reason);成功 → 设 ws.kind = 'onsite'
  *    并在 ws 上挂 send 包装(中间件会通过 ctx.enabledFor(ws) === true 判断)
@@ -19,12 +19,19 @@
  */
 
 import path from 'node:path';
+
 import type { WebSocket, WebSocketServer } from 'ws';
 
-import { assertCwdUnderRoot, resolveOnsiteRoot } from '@/modules/onsite-analysis/problem.service.js';
-import { messagesStore, type StoredMessage } from '@/modules/onsite-analysis/messages-store.service.js';
-import { sessionsDb, userDb } from '@/modules/database/index.js';
-import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+import { onsiteProblemsDb, sessionsDb } from '@/modules/database/index.js';
+import {
+  assertCwdUnderRoot,
+  authorizeOnsiteProblem,
+  messagesStore,
+  readAuthenticatedUserId,
+  resolveOnsiteRoot,
+  type StoredMessage,
+} from '@/modules/onsite-analysis/index.js';
+import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
 export const ONSITE_HELLO_KIND = 'onsite' as const;
@@ -36,11 +43,11 @@ export const ONSITE_WS_PATH = '/onsite/ws';
  *  - 4002 — protocol error after hello (e.g. unknown message type)
  */
 export const ONSITE_WS_CLOSE_CODE_HELLO_FAILED = 4001;
+export const ONSITE_WS_CLOSE_CODE_FORBIDDEN = 4003;
 
 export type OnsiteHelloPayload = {
   problemId: string;
   cwd: string;
-  userId: string | null;
 };
 
 export type OnsiteHelloValidation =
@@ -56,7 +63,8 @@ export type OnsiteHelloValidation =
  *  3. frame.problemId 是非空字符串
  *  4. frame.cwd 是绝对或 relative 路径(后者会被拼到 root)
  *     且 assertCwdUnderRoot(cwd, root) 通过
- *  5. frame.userId 可选(string | null),缺失或 null 都接受
+ * Extra client fields, including legacy userId, are ignored. Authorization
+ * identity comes only from the authenticated WebSocket upgrade request.
  */
 export function validateOnsiteHelloFrame(
   frame: unknown,
@@ -87,20 +95,11 @@ export function validateOnsiteHelloFrame(
     return { ok: false, reason: `cwd escapes onsite root (${root})` };
   }
 
-  let userId: string | null = null;
-  if (obj.userId !== undefined && obj.userId !== null) {
-    if (typeof obj.userId !== 'string') {
-      return { ok: false, reason: 'userId must be string | null' };
-    }
-    userId = obj.userId;
-  }
-
   return {
     ok: true,
     payload: {
       problemId: obj.problemId.trim(),
       cwd,
-      userId,
     },
   };
 }
@@ -110,8 +109,6 @@ type HelloContext = {
   problemId: string;
   /** cwd validated by hello frame. */
   cwd: string;
-  /** userId (string | null) from hello frame. */
-  userId: string | null;
 };
 
 type OnsiteWebSocket = WebSocket & {
@@ -121,39 +118,13 @@ type OnsiteWebSocket = WebSocket & {
 };
 
 /**
- * 解析 onsite hello 帧里的 userId 字段。
- *
- * - 客户端显式传数字串 → 转 number；
- * - 缺失 / null / 不可解析 → 兜底取 `usersDb.getFirstUser().id`（平台模式
- *   的"系统用户"概念）；
- * - 数据库完全没有任何 active 用户 → 抛错（异常分支，正常启动后不会到
- *   这里）。
- */
-function parseHelloUserId(rawUserId: string | null): number {
-  if (rawUserId !== null) {
-    const parsed = Number(rawUserId);
-    if (Number.isInteger(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  const firstUser = userDb.getFirstUser();
-  if (!firstUser) {
-    throw new Error('Onsite hello: no active user available to attribute new onsite session.');
-  }
-  return firstUser.id;
-}
-
-/**
  * 幂等地确保某个 onsite problem 的 session 行存在(kind='onsite')。
  * chat.send 用 sessionId=problemId 查 sessionsDb;缺行则 SESSION_NOT_FOUND。
  * 元数据(branch/iteration/database)从 onsite_problems 表补齐,取不到就留空/NULL
  * (denormalized 副本,不影响 spawn — spawn 只用 project_path/cwd)。全同步,无竞态。
  *
- * `userId` 必传（断言见 sessions.db 的 assertSessionUserId）：来自 onsite
- * hello frame 的 userId 字段（已通过 validateOnsiteHelloFrame 类型校验）。
- * 多用户平台模式下 hello 帧允许 userId=null,但 createOnsiteSession
- * 不允许 null,这里强制兜底从 usersDb.getFirstUser() 解析。COALESCE
- * 语义保留：若该行已存在,userId 不覆盖归属。
+ * `userId` 必传（断言见 sessions.db 的 assertSessionUserId），且只能来自
+ * WebSocket upgrade request 上的认证用户。若该行已存在，不覆盖归属。
  */
 function ensureOnsiteSession(problemId: string, cwd: string, userId: number): void {
   try {
@@ -252,6 +223,7 @@ export const onsiteWebSocketService = {
    */
   attach(wss: WebSocketServer): void {
     wss.on('connection', (ws: WebSocket, request) => {
+      const authenticatedRequest = request as AuthenticatedWebSocketRequest;
       const url = request?.url ?? '/';
       const pathname = new URL(url, 'http://localhost').pathname;
       if (pathname !== ONSITE_WS_PATH) {
@@ -295,25 +267,66 @@ export const onsiteWebSocketService = {
             return;
           }
 
+          const authenticatedUserId = readAuthenticatedUserId(authenticatedRequest.user);
+          if (authenticatedUserId === null) {
+            sendProtocolError('AUTH_USER_ID_MISSING', 'Authenticated user is required.');
+            ws.close(ONSITE_WS_CLOSE_CODE_FORBIDDEN, 'authenticated user required');
+            return;
+          }
+
+          // The frontend opens one shared socket before a problem is selected.
+          // Keep that transport bootstrap frame inert: it binds no problem,
+          // creates no session, and carries no authorization context.
+          const bootstrapCwd = path.resolve(resolveOnsiteRoot(), 'placeholder');
+          if (
+            validation.payload.problemId === 'placeholder' &&
+            validation.payload.cwd === bootstrapCwd
+          ) {
+            helloReceived = true;
+            (ws as OnsiteWebSocket).kind = 'onsite';
+            return;
+          }
+
+          const authorization = authorizeOnsiteProblem(
+            validation.payload.problemId,
+            authenticatedUserId,
+          );
+          if (!authorization.ok) {
+            if (authorization.reason === 'forbidden') {
+              sendProtocolError('PROBLEM_FORBIDDEN', 'You are not allowed to access this onsite problem.');
+              ws.close(ONSITE_WS_CLOSE_CODE_FORBIDDEN, 'onsite problem forbidden');
+            } else {
+              sendProtocolError('PROBLEM_NOT_FOUND', 'Onsite problem was not found.');
+              ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, 'onsite problem not found');
+            }
+            return;
+          }
+
+          if (path.resolve(authorization.problem.cwd) !== validation.payload.cwd) {
+            sendProtocolError('PROBLEM_CONTEXT_MISMATCH', 'Problem and cwd do not match.');
+            ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, 'onsite problem context mismatch');
+            return;
+          }
+
           helloReceived = true;
           attachHelloContext(ws, {
             problemId: validation.payload.problemId,
             cwd: validation.payload.cwd,
-            userId: validation.payload.userId,
           });
 
           // hello 验证通过后,确保该 problem 对应的 onsite session 行存在。
           // 否则后续 chat.send(sessionId=problemId)会因 SESSION_NOT_FOUND 静默失败
           // (卡片死电路的第三处根因:onsite 会话从未被创建)。同步、幂等。
           //
-          // userId 解析顺序：hello 帧显式传 → 平台首用户兜底。assertSessionUserId
-          // 在 createOnsiteSession 入口再校验一次,这里只是为了不让 null 漏到
-          // repository 守卫层（见 sessions.db 的 InvalidSessionUserIdError）。
-          const helloUserId = parseHelloUserId(validation.payload.userId);
-          ensureOnsiteSession(validation.payload.problemId, validation.payload.cwd, helloUserId);
+          ensureOnsiteSession(
+            validation.payload.problemId,
+            validation.payload.cwd,
+            authenticatedUserId,
+          );
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
-          sendProtocolError('HELLO_INTERNAL', message);
+          console.warn('[onsite-ws] hello processing failed:', message);
+          sendProtocolError('HELLO_INTERNAL', 'Unable to initialize onsite context.');
           ws.close(ONSITE_WS_CLOSE_CODE_HELLO_FAILED, 'hello processing failed');
         }
       });

@@ -115,7 +115,6 @@ export interface OnsiteHelloFrame {
   kind: 'onsite';
   problemId: string;
   cwd: string;
-  userId: string | null;
 }
 
 /** Server push: list changed (file added, problem created, etc). */

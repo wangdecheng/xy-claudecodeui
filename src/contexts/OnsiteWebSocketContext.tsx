@@ -5,8 +5,9 @@
  * Design (per tasks.md §6.2):
  *  - One singleton WS per browser tab, mounted via `OnsiteWebSocketProvider`.
  *  - Exponential reconnect with jitter, capped at 30s.
- *  - On `open`, send the hello frame `{ kind: 'onsite', problemId, cwd,
- *    userId }`. problemId/cwd are placeholders at boot; Batch 7 will call
+ *  - On `open`, send the hello frame `{ kind: 'onsite', problemId, cwd }`.
+ *    Identity comes from the authenticated WebSocket token; problemId/cwd
+ *    are placeholders at boot and Batch 7 will call
  *    `resendHello(...)` whenever the user opens a problem.
  *  - On `message`, dispatch:
  *      - `problems:changed`        → store.loadProblems()
@@ -29,14 +30,14 @@ import {
   useRef,
   useState,
 } from 'react';
-
-import { useOnsiteStore } from '../stores/onsiteStore';
 import type {
   OnsiteHelloFrame,
   OnsiteProblemStateChangedEvent,
   OnsiteProblemsChangedEvent,
   OnsiteServerEvent,
 } from '@shared/onsite-types';
+
+import { useOnsiteStore } from '../stores/onsiteStore';
 
 const INITIAL_BACKOFF_MS = 1000;
 const MAX_BACKOFF_MS = 30_000;
@@ -123,7 +124,6 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
     kind: 'onsite',
     problemId: 'placeholder',
     cwd: 'placeholder',
-    userId: readUserIdFromLocalStorage(),
   });
 
   const [isConnected, setIsConnected] = useState(false);
@@ -337,34 +337,4 @@ export function OnsiteWebSocketProvider({ children }: { children: React.ReactNod
       {children}
     </OnsiteWebSocketContext.Provider>
   );
-}
-
-function readUserIdFromLocalStorage(): string | null {
-  if (typeof localStorage === 'undefined') return null;
-  // The canonical auth key is `auth-token` (see
-  // `src/components/auth/constants.ts:AUTH_TOKEN_STORAGE_KEY`); `auth-user`
-  // is never written anywhere, so we must derive the userId from the JWT
-  // payload instead. The body is base64url-encoded JSON — no signature check
-  // is needed client-side (the server still verifies on every request).
-  const token = localStorage.getItem('auth-token');
-  if (!token) return null;
-  try {
-    const parts = token.split('.');
-    if (parts.length !== 3) return null;
-    const payload = parts[1];
-    if (!payload) return null;
-    const b64 = payload.replace(/-/g, '+').replace(/_/g, '/');
-    const json = decodeURIComponent(
-      Array.from(atob(b64))
-        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
-        .join(''),
-    );
-    const parsed = JSON.parse(json) as { sub?: unknown; id?: unknown };
-    if (typeof parsed.sub === 'string') return parsed.sub;
-    if (typeof parsed.id === 'string') return parsed.id;
-    if (typeof parsed.id === 'number') return String(parsed.id);
-    return null;
-  } catch {
-    return null;
-  }
 }

@@ -528,10 +528,19 @@ export const runMigrations = (db: Database) => {
     // 把列补齐, 再做"重建表去掉 NOT NULL"的事, 否则新列不会带过去。
     dropOnsiteProblemsDatabaseNotNull(db);
 
+    // 现场问题 owner 是 REST/WS 权限的权威来源。必须在可能重建
+    // onsite_problems 的 database-nullable 迁移之后添加，避免重建表时
+    // 丢失新列或 REFERENCES 约束。
+    addOnsiteProblemOwnerAndBackfill(db);
+
     // Onsite indexes (kept in migrations so we don't depend on INIT_SCHEMA_SQL
     // having run for an upgraded database that pre-dates these tables).
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_cwd ON onsite_problems(cwd)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_problems_status ON onsite_problems(status)');
+    db.exec(
+      'CREATE INDEX IF NOT EXISTS idx_onsite_problems_owner_updated ' +
+        'ON onsite_problems(owner_user_id, updated_at DESC)',
+    );
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_files_problem_id ON onsite_files(problem_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_state_audit_problem_id ON onsite_state_audit(problem_id)');
     db.exec('CREATE INDEX IF NOT EXISTS idx_onsite_discipline_log_problem_id ON onsite_discipline_log(problem_id)');
@@ -583,6 +592,51 @@ const addSessionsUserIdColumn = (db: Database): void => {
   }
   const columnNames = info.map((c) => c.name);
   addColumnToTableIfNotExists(db, 'sessions', columnNames, 'user_id', 'INTEGER');
+};
+
+/**
+ * Adds the stable onsite problem owner and backfills legacy rows by cwd.
+ *
+ * Backfill is deliberately fail-closed:
+ * - exactly one distinct non-NULL session owner for the same cwd -> assign;
+ * - no owner or multiple owners -> keep NULL for manual reconciliation;
+ * - an existing problem owner is never overwritten.
+ *
+ * This runs on every startup and is idempotent, which also lets a previously
+ * unowned row become attributable after a session synchronizer fills user_id.
+ */
+const addOnsiteProblemOwnerAndBackfill = (db: Database): void => {
+  if (!tableExists(db, 'onsite_problems')) return;
+
+  const columns = getTableInfo(db, 'onsite_problems').map((column) => column.name);
+  addColumnToTableIfNotExists(
+    db,
+    'onsite_problems',
+    columns,
+    'owner_user_id',
+    'INTEGER REFERENCES users(id) ON DELETE RESTRICT',
+  );
+
+  if (!tableExists(db, 'sessions')) return;
+
+  db.exec(`
+    UPDATE onsite_problems
+       SET owner_user_id = (
+         SELECT MIN(s.user_id)
+           FROM sessions s
+          WHERE s.kind = 'onsite'
+            AND s.cwd = onsite_problems.cwd
+            AND s.user_id IS NOT NULL
+       )
+     WHERE owner_user_id IS NULL
+       AND 1 = (
+         SELECT COUNT(DISTINCT s.user_id)
+           FROM sessions s
+          WHERE s.kind = 'onsite'
+            AND s.cwd = onsite_problems.cwd
+            AND s.user_id IS NOT NULL
+       )
+  `);
 };
 
 /**

@@ -35,6 +35,7 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
 
   closeConnection();
   initSchemaWithMigrations();
+  userDb.createUser('default-test-user', 'hash');
   // 模块级 tombstone 是进程级状态, 每个测试前清空, 避免前面测试的 remove()
   // 把状态渗透到当前测试。
   __resetTombstoneForTests();
@@ -685,8 +686,9 @@ test('create 后 sessions 表立即有 kind=onsite 行 (eager session 关闭 rac
  */
 test('create 不传 userId 时回退到平台首用户 (向后兼容)', async () => {
   await withIsolatedEnv(async () => {
-    const created = userDb.createUser('bob', 'hash');
-    const fallbackId = Number(created.id);
+    const fallback = userDb.getFirstUser();
+    assert.ok(fallback);
+    const fallbackId = Number(fallback.id);
 
     const record = await problemService.create({
       customer: 'Fallback',

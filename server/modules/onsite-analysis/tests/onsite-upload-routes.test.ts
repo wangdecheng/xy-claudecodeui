@@ -24,10 +24,10 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { closeConnection } from '@/modules/database/connection.js';
+import { closeConnection, getConnection } from '@/modules/database/connection.js';
 import { initSchemaWithMigrations } from '@/modules/database/tests/helpers/test-schema.js';
 import { onsiteFilesDb } from '@/modules/database/repositories/onsite-files.db.js';
-import { onsiteProblemsDb } from '@/modules/database/repositories/onsite-problems.db.js';
+import { userDb } from '@/modules/database/repositories/users.js';
 
 import onsiteRoutes from '../onsite.routes.js';
 
@@ -70,6 +70,7 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
   await mkdir(process.env.ONSITE_ROOT!, { recursive: true });
   closeConnection();
   initSchemaWithMigrations();
+  userDb.createUser('tester', 'hash');
 
   try {
     await runTest();
@@ -84,16 +85,14 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
 }
 
 function seedProblem(id: string, cwd: string): void {
-  onsiteProblemsDb.insert({
-    id,
-    customer: 'test',
-    third_bridge_branch: null,
-    iteration: 'master_5.2_3.2',
-    database: 'db01',
-    status: 'pending_info',
-    cwd,
-    problem_json_path: null,
-  });
+  getConnection()
+    .prepare(
+      `INSERT INTO onsite_problems
+         (id, customer, third_bridge_branch, iteration, database, status, cwd,
+          problem_json_path, description, owner_user_id)
+       VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, '', ?)`,
+    )
+    .run(id, 'test', 'master_5.2_3.2', 'db01', 'pending_info', cwd, 1);
 }
 
 /**
@@ -107,6 +106,13 @@ async function callRoute(
 ): Promise<{ status: number; body: unknown }> {
   const app = express();
   app.use(express.json());
+  app.use((req, _res, next) => {
+    (req as express.Request & { user?: { id: number; username: string } }).user = {
+      id: 1,
+      username: 'tester',
+    };
+    next();
+  });
   // mount under /api/onsite so the route prefix matches production
   app.use('/api/onsite', onsiteRoutes);
 

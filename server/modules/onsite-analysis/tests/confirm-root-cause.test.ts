@@ -24,6 +24,7 @@ import test from 'node:test';
 import Database from 'better-sqlite3';
 
 import { closeConnection } from '@/modules/database/connection.js';
+import { userDb } from '@/modules/database/repositories/users.js';
 import { initSchemaWithMigrations } from '@/modules/database/tests/helpers/test-schema.js';
 
 import onsiteRoutes from '../onsite.routes.js';
@@ -51,6 +52,7 @@ async function withIsolatedEnv(runTest: () => Promise<void>): Promise<void> {
   process.env.ONSITE_ROOT = path.join(tempDir, 'onsite');
   closeConnection();
   initSchemaWithMigrations();
+  userDb.createUser('tester', 'hash');
 
   try {
     await runTest();
@@ -71,9 +73,10 @@ function seedAnalyzingProblem(): void {
   // 直接向 DB 插一行 analyzing 状态(confirmed 需要从 analyzing 进入)
   const db = new Database(process.env.DATABASE_PATH!);
   db.prepare(
-    `INSERT INTO onsite_problems (id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path)
-     VALUES (?, ?, NULL, ?, ?, ?, ?, NULL)`,
-  ).run(PROBLEM_ID, 'test', 'master_5.2_3.2', 'db01', 'analyzing', '/tmp/cwd');
+    `INSERT INTO onsite_problems
+       (id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path, owner_user_id)
+     VALUES (?, ?, NULL, ?, ?, ?, ?, NULL, ?)`,
+  ).run(PROBLEM_ID, 'test', 'master_5.2_3.2', 'db01', 'analyzing', '/tmp/cwd', 1);
   db.close();
 }
 
