@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>现场问题用户隔离修复 — 技术实现方案</title>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6fb;
+      --card: #ffffff;
+      --text: #172033;
+      --muted: #64748b;
+      --line: #dbe3ef;
+      --blue: #2563eb;
+      --red: #b42318;
+      --green: #137333;
+      --yellow: #8a5800;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+        "Microsoft YaHei", sans-serif;
+      line-height: 1.65;
+    }
+    main { max-width: 1180px; margin: 0 auto; padding: 36px 22px 72px; }
+    h1 { margin: 0 0 8px; font-size: 32px; }
+    h2 { margin: 0 0 16px; font-size: 23px; }
+    h3 { margin: 22px 0 10px; font-size: 18px; }
+    p { margin: 8px 0; }
+    code {
+      padding: 2px 6px;
+      border-radius: 5px;
+      background: #eef2f7;
+      color: #253451;
+      font-family: "SFMono-Regular", Consolas, monospace;
+    }
+    pre.code {
+      overflow-x: auto;
+      padding: 16px;
+      border-radius: 8px;
+      background: #0f172a;
+      color: #e2e8f0;
+      line-height: 1.5;
+    }
+    .subtitle { margin-bottom: 24px; color: var(--muted); font-size: 16px; }
+    .meta { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 24px; }
+    .tag { padding: 4px 10px; border: 1px solid #bfdbfe; border-radius: 999px; background: #eff6ff; color: #1d4ed8; }
+    .card, .diagram-container {
+      margin: 18px 0;
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--card);
+      box-shadow: 0 4px 16px rgba(22, 34, 56, 0.05);
+    }
+    .mermaid { overflow-x: auto; padding: 12px 0; text-align: center; background: #ffffff; }
+    .mermaid svg { background: #ffffff !important; }
+    .mermaid rect.background { fill: #ffffff !important; }
+    table { width: 100%; border-collapse: collapse; margin: 12px 0; background: #fff; }
+    th, td { padding: 10px 12px; border: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { background: #eef4fc; font-weight: 650; }
+    .note, .note-red, .note-green, .note-blue {
+      margin: 14px 0;
+      padding: 12px 15px;
+      border-left: 4px solid;
+      border-radius: 6px;
+    }
+    .note { border-color: #d99a00; background: #fff8df; color: var(--yellow); }
+    .note-red { border-color: #d92d20; background: #fff1f0; color: var(--red); }
+    .note-green { border-color: #1e8e3e; background: #edf8ef; color: var(--green); }
+    .note-blue { border-color: #2563eb; background: #eff6ff; color: #1e40af; }
+    .checklist li { margin: 6px 0; }
+    .small { color: var(--muted); font-size: 14px; }
+    @media (max-width: 760px) {
+      main { padding: 22px 12px 48px; }
+      .card, .diagram-container { padding: 16px; }
+      th, td { padding: 8px; }
+    }
+  </style>
+</head>
+<body>
+<main>
+  <h1>现场问题用户隔离修复</h1>
+  <p class="subtitle">以现场问题为权限边界，彻底解耦资源 owner 与可变化的 Claude session ID。</p>
+  <div class="meta">
+    <span class="tag">迭代 20260713</span>
+    <span class="tag">现有 onsite-analysis 扩展</span>
+    <span class="tag">SQLite + 本地文件</span>
+    <span class="tag">REST + WebSocket</span>
+  </div>
+
+  <section class="card">
+    <h2>1. 结论与设计原则</h2>
+    <p>在 <code>onsite_problems</code> 上新增 <code>owner_user_id</code>，作为现场问题权限的唯一权威来源。<code>sessions.user_id</code> 继续服务聊天执行层，但不再参与问题列表和 REST 资源授权。</p>
+    <div class="note-red"><strong>已确认风险：</strong>现有列表把 provider UUID 映射后的私有问题误判为公开孤儿；详情、消息、附件和写操作也缺少统一对象级鉴权。</div>
+    <div class="note-green"><strong>核心收益：</strong>provider session ID 可以继续变化，问题 owner 始终稳定；新增路由只要使用 <code>:id</code> 就会自动经过统一授权守卫。</div>
+    <ul>
+      <li>服务端认证身份是唯一身份来源，不信任请求体、查询参数或 WebSocket hello 中的 userId。</li>
+      <li>无 owner、磁盘孤儿、迁移冲突全部默认隐藏。</li>
+      <li>越权统一返回 403，响应体不携带任何资源详情。</li>
+      <li>新建问题若 owner 无法持久化，整个创建失败，不再返回“磁盘成功”。</li>
+    </ul>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 1：架构总览与职责边界</h2>
+    <pre class="mermaid">
+graph TB
+  UI[React Onsite UI] -->|Bearer Token + REST| AUTH[authenticateToken]
+  UI -->|Token + onsite hello| WSAUTH[websocket-auth.service]
+  AUTH --> ROUTES[onsite.routes]
+  ROUTES --> GUARD[ProblemOwnershipGuard]
+  GUARD --> REPO[OnsiteProblemsRepository]
+  ROUTES --> SERVICE[ProblemService]
+  SERVICE --> REPO
+  REPO --> DB[(SQLite auth.db)]
+  SERVICE --> FS[(ONSITE_ROOT 本地目录)]
+  WSAUTH --> OWS[OnsiteWebSocketService]
+  OWS --> GUARD
+  OWS --> CHAT[ChatWebSocketService]
+  CHAT --> SESSION[SessionsRepository]
+  SESSION --> DB
+  CHAT --> CLAUDE[Claude CLI / SDK Runtime]
+
+  classDef security fill:#fff1f0,stroke:#d92d20,color:#7a271a;
+  classDef store fill:#eff6ff,stroke:#2563eb,color:#1e3a8a;
+  class GUARD,AUTH,WSAUTH security;
+  class DB,FS store;
+    </pre>
+    <div class="note-blue">具体服务边界：<code>ProblemOwnershipGuard</code> 只负责认证用户与问题 owner 的授权；<code>ProblemService</code> 负责业务和文件系统；<code>SessionsRepository</code> 只负责运行会话。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 2：数据模型</h2>
+    <pre class="mermaid">
+erDiagram
+  USERS ||--o{ ONSITE_PROBLEMS : owns
+  ONSITE_PROBLEMS ||--o{ ONSITE_FILES : contains
+  ONSITE_PROBLEMS ||--o{ ONSITE_STATE_AUDIT : records
+  ONSITE_PROBLEMS ||--o{ ONSITE_DISCIPLINE_LOG : records
+  USERS ||--o{ SESSIONS : runs
+
+  USERS {
+    INTEGER id PK
+    TEXT username UK
+    BOOLEAN is_active
+  }
+  ONSITE_PROBLEMS {
+    TEXT id PK
+    INTEGER owner_user_id FK
+    TEXT customer
+    TEXT cwd
+    TEXT status
+    TEXT problem_json_path
+  }
+  SESSIONS {
+    TEXT session_id PK
+    TEXT provider_session_id
+    INTEGER user_id FK
+    TEXT kind
+    TEXT cwd
+  }
+  ONSITE_FILES {
+    TEXT id PK
+    TEXT problem_id FK
+    TEXT stored_path
+  }
+  ONSITE_STATE_AUDIT {
+    INTEGER id PK
+    TEXT problem_id FK
+    TEXT actor_id
+  }
+  ONSITE_DISCIPLINE_LOG {
+    INTEGER id PK
+    TEXT problem_id FK
+  }
+    </pre>
+    <div class="note"><strong>迁移期约束：</strong><code>owner_user_id</code> 数据库列先保持 nullable，用 NULL 表示“隔离待认领”；应用层新建路径强制非空。历史清理完成后可在后续迁移重建表并加 NOT NULL。</div>
+    <div class="note-red"><strong>禁止：</strong>不能以 <code>sessions.session_id = onsite_problems.id</code> 作为权限关联；该等式在首次 provider 映射后必然失效。</div>
+  </section>
+
+  <section class="card">
+    <h2>2. 数据库与仓库层设计</h2>
+    <h3>2.1 Schema 变更</h3>
+    <pre class="code">ALTER TABLE onsite_problems
+ADD COLUMN owner_user_id INTEGER
+REFERENCES users(id) ON DELETE RESTRICT;
+
+CREATE INDEX IF NOT EXISTS idx_onsite_problems_owner_updated
+ON onsite_problems(owner_user_id, updated_at DESC);</pre>
+    <p class="small">若 SQLite 版本或历史表重建逻辑不适合直接添加带外键列，则复用项目已有的“新表复制 → DROP → RENAME → 重建索引”迁移模式。</p>
+
+    <h3>2.2 Repository API</h3>
+    <table>
+      <thead><tr><th>方法</th><th>职责</th><th>约束</th></tr></thead>
+      <tbody>
+        <tr><td><code>insert(problem, ownerUserId)</code></td><td>创建问题并写入 owner</td><td>owner 必须是正整数且用户存在</td></tr>
+        <tr><td><code>listByOwner(ownerUserId)</code></td><td>数据库先过滤 owner，再返回问题</td><td>禁止扫描全量后在内存过滤</td></tr>
+        <tr><td><code>findAccessRecord(id)</code></td><td>读取 id、owner、cwd 等授权最小字段</td><td>不读取消息和附件</td></tr>
+        <tr><td><code>findOwnedById(id, ownerUserId)</code></td><td>业务层读取已授权问题</td><td>用于防止 TOCTOU</td></tr>
+        <tr><td><code>backfillOwnerByCwd()</code></td><td>仅对唯一非空 owner 做历史回填</td><td>不得覆盖已有 owner</td></tr>
+      </tbody>
+    </table>
+
+    <h3>2.3 统一授权守卫</h3>
+    <p>新增 <code>ProblemOwnershipGuard</code>，推荐通过 Express <code>router.param('id', ...)</code> 覆盖所有现场问题子资源路由。守卫解析 <code>req.user.id</code>，读取最小授权记录并将已授权 problem 挂到 request 上。</p>
+    <table>
+      <thead><tr><th>条件</th><th>响应</th><th>说明</th></tr></thead>
+      <tbody>
+        <tr><td>没有有效认证用户</td><td>401</td><td>由现有 <code>authenticateToken</code> 处理</td></tr>
+        <tr><td>问题不存在</td><td>404</td><td>保持现有资源不存在语义</td></tr>
+        <tr><td>owner 为 NULL</td><td>403</td><td>待认领问题不对普通用户开放</td></tr>
+        <tr><td>owner 与当前用户不同</td><td>403</td><td>统一返回 <code>PROBLEM_FORBIDDEN</code></td></tr>
+        <tr><td>owner 匹配</td><td>继续</td><td>后续 handler 使用守卫加载的记录</td></tr>
+      </tbody>
+    </table>
+    <div class="note-red">403 响应只返回固定的 code/message，不返回实际 owner、customer、cwd、文件名、状态或消息数量。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 3：新建问题与 owner 落库</h2>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Browser as React Onsite UI
+  participant Auth as authenticateToken
+  participant Route as onsite.routes POST /problems
+  participant Service as ProblemService
+  participant FS as ONSITE_ROOT
+  participant Repo as OnsiteProblemsRepository
+  participant DB as SQLite auth.db
+
+  Browser->>Auth: POST /api/onsite/problems + token
+  Auth->>Route: req.user.id
+  Route->>Service: create(input, authenticatedUserId)
+  Service->>FS: 创建目录并写 problem.json
+  Service->>Repo: insert(problem, owner_user_id)
+  Repo->>DB: INSERT onsite_problems
+  alt owner 与问题落库成功
+    DB-->>Service: success
+    Service-->>Browser: 201 Created
+  else DB 写入失败
+    DB-->>Service: error
+    Service->>FS: 尽力回滚本次新建目录
+    Service-->>Browser: 500 CREATE_FAILED
+  end
+    </pre>
+    <div class="note-red">owner 是安全关键数据。不得延续“DB insert 失败但磁盘是权威、仍返回成功”的旧行为，否则会持续制造不可授权的孤儿问题。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 4：问题列表查询</h2>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Browser as React Onsite UI
+  participant Auth as authenticateToken
+  participant Route as onsite.routes GET /problems
+  participant Service as ProblemService
+  participant Repo as OnsiteProblemsRepository
+  participant DB as SQLite auth.db
+  participant FS as ONSITE_ROOT
+
+  Browser->>Auth: GET /api/onsite/problems + token
+  Auth->>Route: req.user.id
+  Route->>Service: listByOwner(userId)
+  Service->>Repo: listByOwner(userId)
+  Repo->>DB: WHERE owner_user_id = ?
+  DB-->>Service: 当前用户的问题记录
+  Service->>FS: 按已授权记录读取必要 problem.json
+  FS-->>Service: 状态与展示字段
+  Service-->>Browser: 200 problems[]
+  Note over Service,DB: 不再比较 problem.id 与 sessions.session_id
+    </pre>
+    <div class="note-blue">磁盘上存在但数据库没有 owner 记录的目录不会进入候选集；启动检查只报告其 ID，普通列表不展示。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 5：详情、消息、附件与写操作鉴权</h2>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Browser as React Onsite UI
+  participant Auth as authenticateToken
+  participant Guard as ProblemOwnershipGuard
+  participant Repo as OnsiteProblemsRepository
+  participant Route as onsite.routes :id handler
+  participant Resource as ProblemService / FilesDb / MessagesStore
+
+  Browser->>Auth: /api/onsite/problems/:id/** + token
+  Auth->>Guard: req.user.id + problemId
+  Guard->>Repo: findAccessRecord(problemId)
+  Repo-->>Guard: owner_user_id + cwd
+  alt owner 不匹配或 NULL
+    Guard-->>Browser: 403 PROBLEM_FORBIDDEN
+  else owner 匹配
+    Guard->>Route: req.onsiteProblem
+    Route->>Resource: 执行业务操作
+    Resource-->>Browser: 2xx
+  end
+    </pre>
+    <div class="note-red">上传路由必须先经过 Guard，再进入 Multer。否则越权用户仍可上传最多 20 × 200MB 的临时文件，造成资源消耗。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 6：WebSocket hello 与聊天授权</h2>
+    <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor Browser as OnsiteWebSocketContext
+  participant WsAuth as websocket-auth.service
+  participant OnsiteWs as OnsiteWebSocketService
+  participant Guard as ProblemOwnershipGuard
+  participant Repo as OnsiteProblemsRepository
+  participant Chat as ChatWebSocketService
+  participant Claude as Claude CLI / SDK Runtime
+
+  Browser->>WsAuth: /onsite/ws?token=JWT
+  WsAuth->>OnsiteWs: request.user.id
+  Browser->>OnsiteWs: hello {kind, problemId, cwd}
+  OnsiteWs->>Guard: authorize(problemId, request.user.id)
+  Guard->>Repo: findAccessRecord(problemId)
+  Repo-->>Guard: owner_user_id + canonical cwd
+  alt owner 不匹配
+    OnsiteWs-->>Browser: protocol_error PROBLEM_FORBIDDEN
+    OnsiteWs-->>Browser: close 4003
+  else cwd 与问题记录不一致
+    OnsiteWs-->>Browser: protocol_error PROBLEM_CONTEXT_MISMATCH
+    OnsiteWs-->>Browser: close 4001
+  else 授权与上下文匹配
+    OnsiteWs->>Chat: attach authenticated onsite context
+    Browser->>Chat: chat.send
+    Chat->>Claude: resume / start
+    Claude-->>Browser: stream frames
+  end
+    </pre>
+    <div class="note-green">前端 hello 删除 <code>userId</code> 字段；服务端即使为兼容旧客户端暂时接受该字段，也必须完全忽略它。</div>
+  </section>
+
+  <section class="diagram-container">
+    <h2>图 7：历史数据迁移与隔离</h2>
+    <pre class="mermaid">
+flowchart TD
+  A[新增 nullable owner_user_id] --> B[遍历 owner 为空的 onsite_problems]
+  B --> C[按 kind=onsite 且 cwd ��等查询 sessions]
+  C --> D{唯一非空 user_id?}
+  D -->|是| E[回填 owner_user_id]
+  D -->|否: 无 owner| F[保持 NULL 并加入待认领报告]
+  D -->|否: 多 owner 冲突| G[保持 NULL 并记录高优先级告警]
+  E --> H[校验 owner 用户存在]
+  H --> I[创建 owner 索引]
+  F --> I
+  G --> I
+  I --> J[应用启动: NULL owner 默认不可见]
+
+  classDef danger fill:#fff1f0,stroke:#d92d20,color:#7a271a;
+  class F,G danger;
+    </pre>
+    <div class="note">迁移只执行 <code>owner_user_id IS NULL</code> 的回填，重复运行不得覆盖人工修正结果。同一 cwd 若出现多个不同 user_id，禁止按最新时间或首用户猜测。</div>
+  </section>
+
+  <section class="card">
+    <h2>3. REST 接口变更清单</h2>
+    <table>
+      <thead><tr><th>接口</th><th>变更</th><th>越权结果</th></tr></thead>
+      <tbody>
+        <tr><td><code>GET /api/onsite/problems</code></td><td>数据库按认证用户 owner 过滤</td><td>不返回其他用户及 NULL owner 数据</td></tr>
+        <tr><td><code>POST /api/onsite/problems</code></td><td>服务端写入 owner；归属落库失败则创建失败</td><td>不接受客户端 owner</td></tr>
+        <tr><td><code>GET /api/onsite/problems/:id</code></td><td>增加 owner 守卫</td><td>403</td></tr>
+        <tr><td><code>DELETE /api/onsite/problems/:id</code></td><td>增加 owner 守卫和审计 actor</td><td>403</td></tr>
+        <tr><td><code>PATCH /api/onsite/problems/:id</code></td><td>增加 owner 守卫；忽略请求体 actor_id</td><td>403</td></tr>
+        <tr><td><code>POST /api/onsite/problems/:id/confirm-root-cause</code></td><td>增加 owner 守卫；actor 取认证用户</td><td>403</td></tr>
+        <tr><td><code>POST /api/onsite/problems/:id/files</code></td><td>owner 守卫放在 Multer 之前</td><td>403，且不接收文件</td></tr>
+        <tr><td><code>GET /api/onsite/problems/:id/files</code></td><td>增加 owner 守卫</td><td>403</td></tr>
+        <tr><td><code>GET /api/onsite/problems/:id/messages</code></td><td>授权后才读取磁盘 JSONL</td><td>403，不触碰历史文件</td></tr>
+      </tbody>
+    </table>
+    <p>统一越权响应示例：</p>
+    <pre class="code">HTTP/1.1 403 Forbidden
+Content-Type: application/json
+
+{
+  "error": "PROBLEM_FORBIDDEN",
+  "message": "You are not allowed to access this onsite problem."
+}</pre>
+  </section>
+
+  <section class="card">
+    <h2>4. 广播与并发设计</h2>
+    <ul>
+      <li><code>problems:changed</code> 不携带问题数据，可以全局通知；客户端收到后重新调用已过滤的列表接口。</li>
+      <li><code>problem:&lt;id&gt;:state-changed</code> 等资源事件必须只发给 owner 对应连接，或降级成无资源 ID 的全局刷新通知。</li>
+      <li>授权通过后到写操作执行前，写 SQL 应再次带上 <code>owner_user_id = ?</code> 条件，避免未来转让功能引入 TOCTOU。</li>
+      <li>删除、状态变更和 owner 回填应使用 SQLite transaction；文件系统删除失败时保留可重试审计信息。</li>
+      <li>本方案不引入消息队列；进程内广播继续满足当前单进程部署。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>5. 安全设计</h2>
+    <h3>访问控制</h3>
+    <ul class="checklist">
+      <li>REST 和 WebSocket 均以服务端 token 解析结果为身份。</li>
+      <li>授权集中在统一守卫，handler 不自行拼接宽松规则。</li>
+      <li>NULL owner、磁盘孤儿和迁移冲突全部 fail closed。</li>
+      <li>敏感写操作 actor 由服务端覆盖，不信任请求体 <code>actor_id</code>。</li>
+      <li>403 错误日志记录请求用户和 problem ID，但响应不返回 owner 信息。</li>
+    </ul>
+
+    <h3>文件上传与存储</h3>
+    <ul class="checklist">
+      <li>owner 鉴权必须发生在 Multer 写临时文件之前。</li>
+      <li>保留单文件 200MB、单批 20 个限制，并建议补充整批总大小限制。</li>
+      <li>继续使用服务端生成的临时文件名和受控解压目录，拒绝路径穿越。</li>
+      <li>不在错误响应中返回实际磁盘路径。</li>
+      <li>问题目录权限至少保持当前用户专属，不扩大为组或全局可写。</li>
+    </ul>
+
+    <h3>输入、传输与审计</h3>
+    <ul class="checklist">
+      <li>problem ID、cwd、状态和 reason 继续执行类型及边界校验。</li>
+      <li>生产环境 REST/WSS 通过 HTTPS/WSS 传输。</li>
+      <li>删除、上传、状态变更、根因确认记录 authenticated user ID、problem ID、动作和时间。</li>
+      <li>审计日志不记录 token、消息正文、文件内容和密码等敏感信息。</li>
+      <li>迁移报告只输出问题 ID、cwd 摘要和冲突类型，不输出客户日志内容。</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>6. 测试与验收矩阵</h2>
+    <table>
+      <thead><tr><th>层级</th><th>必测场景</th><th>预期</th></tr></thead>
+      <tbody>
+        <tr><td>Repository</td><td>owner 写入、按 owner 列表、NULL owner、索引查询</td><td>只返回匹配 owner</td></tr>
+        <tr><td>Migration</td><td>唯一 owner、NULL owner、多 owner 冲突、重复执行</td><td>安全回填且幂等</td></tr>
+        <tr><td>Service</td><td>创建时 DB owner 写入失败</td><td>返回失败并清理新目录</td></tr>
+        <tr><td>Regression</td><td><code>assignProviderSessionId(problemId, uuid)</code> 后重新列表</td><td>owner 可见，其他用户不可见</td></tr>
+        <tr><td>REST</td><td>所有 <code>:id</code> 接口按 owner A/B 参数化测试</td><td>owner 2xx，非 owner 403</td></tr>
+        <tr><td>Upload</td><td>非 owner 提交 multipart 大文件</td><td>403，Multer 不创建临时文件</td></tr>
+        <tr><td>WebSocket</td><td>伪造 hello userId、伪造 cwd、访问他人 problem</td><td>拒绝绑定和聊天</td></tr>
+        <tr><td>Broadcast</td><td>用户 A 状态变化，用户 B 在线</td><td>B 不收到资源详情</td></tr>
+        <tr><td>Compatibility</td><td>owner 正常创建、恢复、上传、确认和删除</td><td>行为与修复前一致</td></tr>
+      </tbody>
+    </table>
+    <p>执行建议：</p>
+    <pre class="code">npx tsx --test server/modules/database/tests/onsite-owner-migration.test.ts
+npx tsx --test server/modules/onsite-analysis/tests/onsite-ownership.routes.test.ts
+npx tsx --test server/modules/websocket/tests/onsite-websocket-ownership.test.ts
+npm run typecheck
+npm run lint
+npm run build</pre>
+  </section>
+
+  <section class="card">
+    <h2>7. 实施顺序与回滚</h2>
+    <ol>
+      <li><strong>数据库：</strong>增加 nullable owner 字段、索引、回填迁移及迁移测试。</li>
+      <li><strong>数据访问：</strong>Repository 增加 owner API，创建路径强制写 owner。</li>
+      <li><strong>读取隔离：</strong>列表改为 owner-first 查询，删除孤儿公开逻辑。</li>
+      <li><strong>REST：</strong>接入统一守卫，先覆盖读取，再覆盖所有写操作和上传。</li>
+      <li><strong>WebSocket：</strong>删除客户端身份信任，增加 problem/cwd/owner 三项校验。</li>
+      <li><strong>广播与审计：</strong>资源事件按 owner 定向，敏感操作使用认证 actor。</li>
+      <li><strong>验证：</strong>迁移副本演练、双用户回归、typecheck、lint、build。</li>
+    </ol>
+    <div class="note"><strong>发布顺序：</strong>先部署兼容 nullable owner 的后端并完成回填，再启用严格过滤。不得先删除旧过滤逻辑、后补 owner 数据。</div>
+    <div class="note-red"><strong>回滚原则：</strong>回滚应用时保留新增 owner 列和已回填数据；不要执行破坏性反向迁移。若严格过滤异常，可通过代码回滚恢复服务，但禁止恢复“NULL/孤儿公开”。</div>
+  </section>
+
+  <section class="card">
+    <h2>8. 完成定义</h2>
+    <ul class="checklist">
+      <li>现网截图中的两条 owner=4 问题只对其 owner 可见。</li>
+      <li>9 条已映射 provider UUID 的问题不再被误判为孤儿。</li>
+      <li>7 条 NULL owner 历史数据不对普通用户展示，并生成待处理清单。</li>
+      <li>所有现场问题子资源接口完成统一 owner 审计，无遗漏路由。</li>
+      <li>双用户权限矩阵、迁移、WebSocket、上传前置鉴权测试通过。</li>
+      <li><code>npm run typecheck</code>、<code>npm run lint</code>、<code>npm run build</code> 通过。</li>
+    </ul>
+  </section>
+
+  <p class="small">关联需求分析：spec/20260713/onsite-problem-user-isolation.md</p>
+</main>
+<script>
+  mermaid.initialize({ startOnLoad: true, theme: 'default', securityLevel: 'strict' });
+</script>
+</body>
+</html>
