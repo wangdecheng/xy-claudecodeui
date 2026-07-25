@@ -19,8 +19,10 @@ import { Upload, X } from 'lucide-react';
 
 import { useOnsiteStore } from '../../stores/onsiteStore';
 import { cn } from '../../lib/utils';
+import { filterSupportedOnsiteFiles, ONSITE_FILE_ACCEPT } from '../../utils/onsiteFileTypes';
 
 import AnalysisFilesRow from './AnalysisFilesRow';
+import OnsiteUploadStatus from './OnsiteUploadStatus';
 
 export const MAX_FILES = 20;
 export const MAX_FILE_SIZE = 200 * 1024 * 1024; // 200 MB
@@ -50,6 +52,8 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
 
   const progress = problemId ? getUploadProgress(problemId) : -1;
   const uploading = progress >= 0 && progress < 100;
+  const activeBatch = problemId ? store.getUploadBatch(problemId) : undefined;
+  const batchActive = activeBatch?.phase === 'transferring' || activeBatch?.phase === 'processing';
   const uploadedFiles = store.getFiles(problemId);
 
   const pushWarning = (text: string) => {
@@ -61,9 +65,11 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
   };
 
   const trimFiles = (raw: File[]): File[] => {
+    const supported = filterSupportedOnsiteFiles(raw);
+    if (supported.rejected.length > 0) pushWarning(`不支持的现场资料：${supported.rejected.map((file) => file.name).join('、')}`);
     const accepted: File[] = [];
     let oversizedCount = 0;
-    for (const f of raw) {
+    for (const f of supported.accepted) {
       if (f.size > MAX_FILE_SIZE) {
         oversizedCount += 1;
         continue;
@@ -124,8 +130,8 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
       </label>
       <div
         role="button"
-        tabIndex={problemId ? 0 : -1}
-        aria-disabled={!problemId}
+        tabIndex={problemId && !batchActive ? 0 : -1}
+        aria-disabled={!problemId || batchActive}
         data-testid="onsite-log-uploader"
         onDragOver={(e) => {
           if (!problemId) return;
@@ -134,7 +140,7 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
-        onClick={() => problemId && inputRef.current?.click()}
+        onClick={() => problemId && !batchActive && inputRef.current?.click()}
         onKeyDown={(e) => {
           if (!problemId) return;
           if (e.key === 'Enter' || e.key === ' ') {
@@ -161,6 +167,7 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
         <input
           ref={inputRef}
           type="file"
+          accept={ONSITE_FILE_ACCEPT}
           multiple
           className="hidden"
           data-testid="onsite-log-uploader-input"
@@ -173,6 +180,8 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
           }}
         />
       </div>
+
+      {problemId && <OnsiteUploadStatus problemId={problemId} />}
 
       {selectedNames.length > 0 && (
         <div
@@ -212,7 +221,7 @@ export default function LogUploader({ problemId, className, onUploaded }: LogUpl
         {t('onsite:wizard.dzNote')}
       </p>
 
-      {uploading && (
+      {uploading && !activeBatch && (
         <div data-testid="onsite-upload-progress" className="flex flex-col gap-1">
           <div className="h-1.5 w-full overflow-hidden rounded-full bg-muted">
             <div

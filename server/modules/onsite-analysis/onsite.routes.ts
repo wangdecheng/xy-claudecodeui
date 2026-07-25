@@ -17,6 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 
 import express, { type Request, type Response } from 'express';
@@ -108,6 +109,7 @@ const uploadMiddleware = multer({
     files: 20,
   },
 });
+const activeProblemUploads = new Set<string>();
 
 // ---------------------------------------------------------------------------
 // GET /config (Batch 1)
@@ -517,8 +519,20 @@ router.post('/problems/:id/confirm-root-cause', (req: Request, res: Response) =>
 // 单包超大 / 总数超限 → 413。
 
 router.post('/problems/:id/files', (req, res, next) => {
+  const problemId = String(req.params.id);
+  if (activeProblemUploads.has(problemId)) {
+    return res.status(409).json({ error: 'UPLOAD_IN_PROGRESS', message: '该现场问题已有上传批次正在处理' });
+  }
+  activeProblemUploads.add(problemId);
+  const releaseUpload = () => activeProblemUploads.delete(problemId);
+  req.once('aborted', () => {
+    void cleanupUploadedFiles(req);
+    releaseUpload();
+  });
   uploadMiddleware.array('files', 20)(req, res, (multerErr: unknown) => {
     if (multerErr) {
+      void cleanupUploadedFiles(req);
+      releaseUpload();
       const message = multerErr instanceof Error ? multerErr.message : String(multerErr);
       if (/LIMIT_FILE_SIZE/i.test(message)) {
         return res.status(413).json({ error: 'PAYLOAD_TOO_LARGE', message: '单文件超过 200MB 上限' });
@@ -531,8 +545,10 @@ router.post('/problems/:id/files', (req, res, next) => {
       }
       return res.status(400).json({ error: 'UPLOAD_FAILED', message });
     }
-    return handleFileUpload(req, res, next);
+    void handleFileUpload(req, res, next).finally(releaseUpload);
+    return undefined;
   });
+  return undefined;
 });
 
 async function handleFileUpload(req: Request, res: Response, _next: express.NextFunction): Promise<void> {
@@ -549,12 +565,14 @@ async function handleFileUpload(req: Request, res: Response, _next: express.Next
   try {
     problem = await problemService.getById(id);
   } catch (err: unknown) {
+    await cleanupUploadedFiles(req);
     const message = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: 'GET_PROBLEM_FAILED', message });
     return;
   }
 
   if (!problem) {
+    await cleanupUploadedFiles(req);
     res.status(404).json({ error: 'PROBLEM_NOT_FOUND', message: `Problem not found: ${id}` });
     return;
   }
@@ -564,12 +582,14 @@ async function handleFileUpload(req: Request, res: Response, _next: express.Next
     originalname: f.originalname,
     path: f.path,
     size: f.size,
+    mimetype: f.mimetype,
   }));
 
   let results;
   try {
     results = await unpackMany(inputs, problem.cwd);
   } catch (err: unknown) {
+    await cleanupUploadedFiles(req);
     // 整批失败
     if (err instanceof PayloadTooLargeError) {
       res.status(413).json({ error: err.code, message: err.message });
@@ -584,35 +604,48 @@ async function handleFileUpload(req: Request, res: Response, _next: express.Next
     return;
   }
 
-  // 3) 成功的项落 onsite_files 表
-  for (const r of results) {
-    if (!r.ok) continue;
-    const unpackedBase = r.unpackedDir.split('/').pop() ?? '';
-    onsiteFilesDb.insert({
-      id: randomUUID(),
-      problem_id: problem.id,
-      original_name: r.originalName,
-      stored_path: `${problem.cwd}/${unpackedBase}`,
-      size: r.size,
-      kind: 'archive',
-      unpacked_dir: r.unpackedDir,
-    });
-  }
+  try {
+    // 3) 成功的项落 onsite_files 表
+    for (const r of results) {
+      if (!r.ok) continue;
+      onsiteFilesDb.insert({
+        id: randomUUID(),
+        problem_id: problem.id,
+        original_name: r.originalName,
+        stored_path: r.storedPath,
+        size: r.size,
+        kind: r.kind,
+        unpacked_dir: r.unpackedDir,
+      });
+    }
 
   // 4) 207 multi-status
-  res.status(207).json({
-    results: results.map((r) => {
-      if (r.ok) {
-        return {
-          ok: true,
-          originalName: r.originalName,
-          unpackedDir: r.unpackedDir,
-          size: r.size,
-        };
-      }
-      return { ok: false, originalName: r.originalName, error: r.error };
-    }),
-  });
+    res.status(207).json({
+      results: results.map((r) => {
+        if (r.ok) {
+          return {
+            ok: true,
+            originalName: r.originalName,
+            unpackedDir: r.unpackedDir,
+            storedPath: r.storedPath,
+            size: r.size,
+            kind: r.kind,
+          };
+        }
+        return { ok: false, originalName: r.originalName, error: r.error };
+      }),
+    });
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    res.status(500).json({ error: 'SAVE_UPLOAD_RESULTS_FAILED', message });
+  } finally {
+    await cleanupUploadedFiles(req);
+  }
+}
+
+async function cleanupUploadedFiles(req: Request): Promise<void> {
+  const files = (req.files as Express.Multer.File[] | undefined) ?? [];
+  await Promise.all(files.map((file) => rm(file.path, { force: true }).catch(() => undefined)));
 }
 
 // ---------------------------------------------------------------------------

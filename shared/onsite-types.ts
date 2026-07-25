@@ -78,7 +78,7 @@ export interface ConfigPayload {
 
 // ─── Files (Batch 5.4) ────────────────────────────────────────────────────
 
-export type OnsiteFileKind = 'archive' | 'log' | 'image' | 'other';
+export type OnsiteFileKind = 'archive' | 'gzip' | 'log' | 'image' | 'other';
 
 export interface OnsiteFile {
   id: string;
@@ -97,6 +97,8 @@ export interface UploadResult {
   ok: boolean;
   originalName: string;
   unpackedDir?: string;
+  storedPath?: string;
+  kind?: OnsiteFileKind;
   size?: number;
   error?: string;
 }

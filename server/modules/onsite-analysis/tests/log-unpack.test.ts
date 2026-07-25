@@ -18,10 +18,11 @@
 
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, rm, stat, writeFile, mkdir } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, stat, symlink, writeFile, mkdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { gzipSync } from 'node:zlib';
 
 import {
   PayloadTooLargeError,
@@ -82,6 +83,17 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
+async function buildTarGz(filePath: string): Promise<void> {
+  const source = await mkdtemp(path.join(tmpdir(), 'log-unpack-tar-source-'));
+  await writeFile(path.join(source, 'service.log'), 'tar contents');
+  await new Promise<void>((resolve, reject) => {
+    const proc = spawn('tar', ['-czf', filePath, '-C', source, '.']);
+    proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`tar exit ${code}`)));
+    proc.on('error', reject);
+  });
+  await rm(source, { recursive: true, force: true });
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -92,6 +104,115 @@ test('unpackMany([]) 返空数组', async () => {
     const results = await unpackMany([], destDir);
     assert.deepEqual(results, []);
   } finally {
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
+
+test('普通 GZ 与图片按类型落盘，并从已有最大 unpacked-N 继续编号', async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-types-'));
+  const destDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-types-dest-'));
+  try {
+    await mkdir(path.join(destDir, 'unpacked-7'));
+    const gzipPath = path.join(tmpDir, 'app.log.gz');
+    const pngPath = path.join(tmpDir, 'shot.png');
+    await writeFile(gzipPath, gzipSync(Buffer.from('hello gzip')));
+    await writeFile(pngPath, Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 0]));
+
+    const results = await unpackMany([
+      { originalname: 'app.log.gz', path: gzipPath, size: 10, mimetype: 'application/gzip' },
+      { originalname: 'shot.png', path: pngPath, size: 12, mimetype: 'image/png' },
+    ], destDir);
+
+    assert.equal(results[0]?.ok, true);
+    assert.equal(results[1]?.ok, true);
+    if (results[0]?.ok && results[1]?.ok) {
+      assert.equal(path.basename(results[0].unpackedDir), 'unpacked-8');
+      assert.equal(results[0].kind, 'gzip');
+      assert.equal((await readFile(results[0].storedPath)).toString(), 'hello gzip');
+      assert.equal(path.basename(results[1].unpackedDir), 'unpacked-9');
+      assert.equal(results[1].kind, 'image');
+    }
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
+
+test('图片扩展名、MIME 与文件特征不一致时独立失败并清理目录', async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-image-mismatch-'));
+  const destDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-image-mismatch-dest-'));
+  try {
+    const fake = path.join(tmpDir, 'fake.png');
+    await writeFile(fake, 'not an image');
+    const [result] = await unpackMany([{ originalname: 'fake.png', path: fake, size: 12, mimetype: 'image/png' }], destDir);
+    assert.equal(result?.ok, false);
+    if (result && !result.ok) assert.equal(result.error, 'unsupported_or_mismatched_file_type');
+    assert.equal(await exists(path.join(destDir, 'unpacked-1')), false);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
+
+test('TAR.GZ 与 TGZ 解包多个条目', async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-tar-'));
+  const destDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-tar-dest-'));
+  try {
+    const tarPath = path.join(tmpDir, 'logs.tar.gz');
+    const tgzPath = path.join(tmpDir, 'more.tgz');
+    await buildTarGz(tarPath);
+    await buildTarGz(tgzPath);
+    const results = await unpackMany([
+      { originalname: 'logs.tar.gz', path: tarPath, size: (await stat(tarPath)).size },
+      { originalname: 'more.tgz', path: tgzPath, size: (await stat(tgzPath)).size },
+    ], destDir);
+    assert.ok(results.every((result) => result.ok));
+    assert.equal((await readFile(path.join(destDir, 'unpacked-1', 'service.log'))).toString(), 'tar contents');
+    assert.equal((await readFile(path.join(destDir, 'unpacked-2', 'service.log'))).toString(), 'tar contents');
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
+
+test('普通 GZ 在流式写入中执行解压后单文件限额并清理半成品', async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-gzip-limit-'));
+  const destDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-gzip-limit-dest-'));
+  try {
+    const gzipPath = path.join(tmpDir, 'large.log.gz');
+    await writeFile(gzipPath, gzipSync(Buffer.from('expanded payload')));
+    const [result] = await unpackMany(
+      [{ originalname: 'large.log.gz', path: gzipPath, size: 10 }],
+      destDir,
+      { maxExpandedFileSize: 5 },
+    );
+    assert.equal(result?.ok, false);
+    if (result && !result.ok) assert.equal(result.error, 'expanded_file_size_exceeded');
+    assert.equal(await exists(path.join(destDir, 'unpacked-1')), false);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+    await rm(destDir, { recursive: true, force: true });
+  }
+});
+
+test('ZIP 中的符号链接被拒绝并清理目录', async () => {
+  const tmpDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-zip-link-'));
+  const destDir = await mkdtemp(path.join(tmpdir(), 'log-unpack-zip-link-dest-'));
+  try {
+    await writeFile(path.join(tmpDir, 'target.log'), 'target');
+    await symlink('target.log', path.join(tmpDir, 'link.log'));
+    const archive = path.join(tmpDir, 'links.zip');
+    await new Promise<void>((resolve, reject) => {
+      const proc = spawn('zip', ['-y', archive, 'link.log'], { cwd: tmpDir });
+      proc.on('close', (code) => code === 0 ? resolve() : reject(new Error(`zip exit ${code}`)));
+      proc.on('error', reject);
+    });
+    const [result] = await unpackMany([{ originalname: 'links.zip', path: archive, size: (await stat(archive)).size }], destDir);
+    assert.equal(result?.ok, false);
+    if (result && !result.ok) assert.equal(result.error, 'dangerous_symlink');
+    assert.equal(await exists(path.join(destDir, 'unpacked-1')), false);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
     await rm(destDir, { recursive: true, force: true });
   }
 });

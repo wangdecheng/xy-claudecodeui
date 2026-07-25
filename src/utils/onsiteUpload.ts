@@ -10,6 +10,8 @@ export interface OnsiteUploadRequestOptions {
   token?: string | null;
   onProgress?: (progress: number) => void;
   onRefreshedToken?: (token: string) => void;
+  onPhase?: (phase: 'transferring' | 'processing' | 'completed') => void;
+  signal?: AbortSignal;
 }
 
 function parseResponse(xhr: XMLHttpRequest): UploadResponseBody {
@@ -40,16 +42,29 @@ export function requestOnsiteUpload(
 
   return new Promise<UploadResult[]>((resolve, reject) => {
     const xhr = new XMLHttpRequest();
+    let processing = false;
     xhr.open('POST', `/api/onsite/problems/${encodeURIComponent(problemId)}/files`, true);
 
     if (options.token) {
       xhr.setRequestHeader('Authorization', `Bearer ${options.token}`);
     }
 
+    const abortDuringTransfer = () => {
+      if (!processing) xhr.abort();
+    };
+    options.signal?.addEventListener('abort', abortDuringTransfer, { once: true });
+    options.onPhase?.('transferring');
+
     xhr.upload.onprogress = (event) => {
       if (!event.lengthComputable || event.total <= 0) return;
       // Reserve 100% for the server-side unpacking and database write.
       options.onProgress?.(Math.min(99, Math.round((event.loaded / event.total) * 100)));
+    };
+
+    xhr.upload.onload = () => {
+      processing = true;
+      options.onProgress?.(99);
+      options.onPhase?.('processing');
     };
 
     xhr.onload = () => {
@@ -69,6 +84,8 @@ export function requestOnsiteUpload(
           reject(new Error('上传服务未返回文件处理结果'));
           return;
         }
+        options.onProgress?.(100);
+        options.onPhase?.('completed');
         resolve(body.results);
         return;
       }
@@ -78,6 +95,7 @@ export function requestOnsiteUpload(
 
     xhr.onerror = () => reject(new Error('上传失败，请检查网络连接后重试'));
     xhr.onabort = () => reject(new Error('上传已取消'));
+    xhr.onloadend = () => options.signal?.removeEventListener('abort', abortDuringTransfer);
     xhr.send(formData);
   });
 }

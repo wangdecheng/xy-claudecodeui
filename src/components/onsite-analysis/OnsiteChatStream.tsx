@@ -29,11 +29,13 @@ import type { OnsiteChatFrame, ProblemRecord } from '@shared/onsite-types';
 import { cn } from '../../lib/utils';
 import { useOnsiteWebSocket } from '../../contexts/OnsiteWebSocketContext';
 import { useOnsiteStore } from '../../stores/onsiteStore';
+import { filterSupportedOnsiteFiles, ONSITE_FILE_ACCEPT } from '../../utils/onsiteFileTypes';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import { AskUserQuestionPanel } from '../chat/tools/components/InteractiveRenderers';
 import ActivityIndicator from '../chat/view/subcomponents/ActivityIndicator';
 
 import AnalysisFilesRow from './AnalysisFilesRow';
+import OnsiteUploadStatus from './OnsiteUploadStatus';
 import AnalysisInfoChips from './AnalysisInfoChips';
 import CardRenderer from './cards/CardRenderer';
 import CwdLockView from './CwdLockView';
@@ -557,9 +559,12 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   };
 
   const onPickFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const picked = e.target.files ? Array.from(e.target.files) : [];
+    const selected = e.target.files ? Array.from(e.target.files) : [];
     // reset input so the same file can be re-picked later
     e.target.value = '';
+    if (selected.length === 0) return;
+    const { accepted: picked, rejected } = filterSupportedOnsiteFiles(selected);
+    if (rejected.length > 0) setUploadError(`不支持的现场资料：${rejected.map((file) => file.name).join('、')}`);
     if (picked.length === 0) return;
     setUploadError(null);
     try {
@@ -654,6 +659,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       </div>
 
       <footer className="flex shrink-0 flex-col gap-1 border-t border-border bg-card/50 px-4 py-2">
+        <OnsiteUploadStatus problemId={problemId} />
         {uploadError && (
           <div
             data-testid="onsite-chat-upload-error"
@@ -688,6 +694,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
           ref={fileInputRef}
           type="file"
           multiple
+          accept={ONSITE_FILE_ACCEPT}
           hidden
           data-testid="onsite-chat-file-input"
           onChange={onPickFiles}
@@ -698,6 +705,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             onClick={() => fileInputRef.current?.click()}
             title="上传日志包"
             data-testid="onsite-chat-upload"
+            disabled={Boolean(store.getUploadBatch(problemId) && ['transferring', 'processing'].includes(store.getUploadBatch(problemId)!.phase))}
             className="inline-flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-md border border-input bg-background text-foreground hover:bg-muted"
           >
             <Paperclip className="h-4 w-4" />

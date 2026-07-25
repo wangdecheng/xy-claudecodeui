@@ -50,6 +50,7 @@ export interface OnsiteStoreState {
   currentProblemId: string | null;
   /** Progress 0..100 keyed by problemId; missing key = idle. */
   uploading: Record<string, number>;
+  uploadBatches: Record<string, UploadBatchState>;
   /** Uploaded/extracted files keyed by problemId; from GET /problems/:id/files. */
   files: Record<string, OnsiteFile[]>;
   /**
@@ -93,6 +94,8 @@ export interface OnsiteStoreActions {
    * per-file results array.
    */
   uploadFiles: (id: string, files: File[]) => Promise<UploadResult[]>;
+  cancelUpload: (id: string) => void;
+  dismissUpload: (id: string) => void;
   /** GET /api/onsite/problems/:id/files and cache in `files[id]`. */
   loadFiles: (id: string) => Promise<OnsiteFile[]>;
   /**
@@ -116,6 +119,7 @@ export interface OnsiteStoreSelectors {
   getProblem: (id: string | null) => ProblemRecord | undefined;
   /** Pick the upload progress (0..100) for one problem; -1 if not uploading. */
   getUploadProgress: (id: string) => number;
+  getUploadBatch: (id: string) => UploadBatchState | undefined;
   /** True iff any problem currently has uploading[id] defined. */
   getAnyUploading: () => boolean;
   /** Uploaded/extracted files for one problem (empty array if none loaded). */
@@ -129,11 +133,21 @@ const INITIAL_STATE: OnsiteStoreState = {
   config: null,
   currentProblemId: null,
   uploading: {},
+  uploadBatches: {},
   files: {},
   pendingInitialPrompt: {},
   lastError: null,
   lastFetchedAt: 0,
 };
+
+export interface UploadBatchState {
+  phase: 'transferring' | 'processing' | 'success' | 'partial' | 'error' | 'cancelled';
+  progress: number;
+  results?: UploadResult[];
+  error?: string;
+}
+
+const uploadControllers = new Map<string, AbortController>();
 
 // ─── Hook ──────────────────────────────────────────────────────────────────
 
@@ -292,7 +306,14 @@ export function useOnsiteStore(): OnsiteStore {
   const uploadFiles = useCallback(
     async (id: string, files: File[]): Promise<UploadResult[]> => {
       if (files.length === 0) return [];
+      if (uploadControllers.has(id)) throw new Error('该现场问题已有上传批次正在进行');
+      const controller = new AbortController();
+      uploadControllers.set(id, controller);
       stateRef.current.uploading = { ...stateRef.current.uploading, [id]: 0 };
+      stateRef.current.uploadBatches = {
+        ...stateRef.current.uploadBatches,
+        [id]: { phase: 'transferring', progress: 0 },
+      };
       notify();
 
       const token = typeof localStorage !== 'undefined' ? localStorage.getItem('auth-token') : null;
@@ -301,20 +322,52 @@ export function useOnsiteStore(): OnsiteStore {
           token,
           onProgress: (progress) => {
             stateRef.current.uploading = { ...stateRef.current.uploading, [id]: progress };
+            const current = stateRef.current.uploadBatches[id];
+            if (current) stateRef.current.uploadBatches = { ...stateRef.current.uploadBatches, [id]: { ...current, progress } };
             notify();
           },
+          onPhase: (phase) => {
+            if (phase === 'completed') return;
+            const current = stateRef.current.uploadBatches[id];
+            if (current) stateRef.current.uploadBatches = { ...stateRef.current.uploadBatches, [id]: { ...current, phase } };
+            notify();
+          },
+          signal: controller.signal,
           onRefreshedToken: (refreshedToken) => {
             if (typeof localStorage !== 'undefined') {
               localStorage.setItem('auth-token', refreshedToken);
             }
           },
         });
+        const successful = results.filter((result) => result.ok).length;
+        const failed = results.length - successful;
+        const phase = failed === 0 ? 'success' : successful > 0 ? 'partial' : 'error';
+        stateRef.current.uploadBatches = {
+          ...stateRef.current.uploadBatches,
+          [id]: { phase, progress: 100, results },
+        };
         stateRef.current.lastError = null;
+        notify();
+        if (phase === 'success') {
+          setTimeout(() => {
+            if (stateRef.current.uploadBatches[id]?.phase !== 'success') return;
+            const nextBatches = { ...stateRef.current.uploadBatches };
+            delete nextBatches[id];
+            stateRef.current.uploadBatches = nextBatches;
+            notify();
+          }, 1500);
+        }
         return results;
       } catch (err: unknown) {
-        stateRef.current.lastError = err instanceof Error ? err.message : String(err);
+        const message = err instanceof Error ? err.message : String(err);
+        stateRef.current.lastError = message;
+        stateRef.current.uploadBatches = {
+          ...stateRef.current.uploadBatches,
+          [id]: { phase: controller.signal.aborted ? 'cancelled' : 'error', progress: stateRef.current.uploading[id] ?? 0, error: message },
+        };
         throw err;
       } finally {
+        uploadControllers.delete(id);
         const next = { ...stateRef.current.uploading };
         delete next[id];
         stateRef.current.uploading = next;
@@ -323,6 +376,18 @@ export function useOnsiteStore(): OnsiteStore {
     },
     [notify],
   );
+
+  const cancelUpload = useCallback((id: string): void => {
+    if (stateRef.current.uploadBatches[id]?.phase === 'transferring') uploadControllers.get(id)?.abort();
+  }, []);
+
+  const dismissUpload = useCallback((id: string): void => {
+    if (uploadControllers.has(id)) return;
+    const next = { ...stateRef.current.uploadBatches };
+    delete next[id];
+    stateRef.current.uploadBatches = next;
+    notify();
+  }, [notify]);
 
   const loadFiles = useCallback(
     async (id: string): Promise<OnsiteFile[]> => {
@@ -409,6 +474,11 @@ export function useOnsiteStore(): OnsiteStore {
           delete nextUploading[id];
           stateRef.current.uploading = nextUploading;
         }
+        if (stateRef.current.uploadBatches[id]) {
+          const nextBatches = { ...stateRef.current.uploadBatches };
+          delete nextBatches[id];
+          stateRef.current.uploadBatches = nextBatches;
+        }
         // 若删的是当前选中,清空选中(调用方据此导航回 /onsite)
         if (stateRef.current.currentProblemId === id) {
           stateRef.current.currentProblemId = null;
@@ -441,6 +511,8 @@ export function useOnsiteStore(): OnsiteStore {
     return stateRef.current.uploading[id] ?? -1;
   }, []);
 
+  const getUploadBatch = useCallback((id: string): UploadBatchState | undefined => stateRef.current.uploadBatches[id], []);
+
   const getAnyUploading = useCallback((): boolean => {
     return Object.keys(stateRef.current.uploading).length > 0;
   }, []);
@@ -461,6 +533,7 @@ export function useOnsiteStore(): OnsiteStore {
       config: state.config,
       currentProblemId: state.currentProblemId,
       uploading: state.uploading,
+      uploadBatches: state.uploadBatches,
       files: state.files,
       pendingInitialPrompt: state.pendingInitialPrompt,
       lastError: state.lastError,
@@ -472,11 +545,14 @@ export function useOnsiteStore(): OnsiteStore {
       takeInitialPrompt,
       patchStatus,
       uploadFiles,
+      cancelUpload,
+      dismissUpload,
       loadFiles,
       loadMessages,
       deleteProblem,
       getProblem,
       getUploadProgress,
+      getUploadBatch,
       getAnyUploading,
       getFiles,
     };
@@ -489,6 +565,8 @@ export function useOnsiteStore(): OnsiteStore {
     selectProblem,
     patchStatus,
     uploadFiles,
+    cancelUpload,
+    dismissUpload,
     loadFiles,
     loadMessages,
     deleteProblem,
@@ -496,6 +574,7 @@ export function useOnsiteStore(): OnsiteStore {
     takeInitialPrompt,
     getProblem,
     getUploadProgress,
+    getUploadBatch,
     getAnyUploading,
     getFiles,
   ]);

@@ -41,6 +41,7 @@ import { X } from 'lucide-react';
 
 import { authenticatedFetch } from '../../utils/api';
 import { useOnsiteStore } from '../../stores/onsiteStore';
+
 import CustomerSelect from './CustomerSelect';
 import IterationSelect from './IterationSelect';
 import DatabaseSelect from './DatabaseSelect';
@@ -108,6 +109,8 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
+  const uploadBatch = createdId ? store.getUploadBatch(createdId) : undefined;
+  const uploadActive = uploadBatch?.phase === 'transferring' || uploadBatch?.phase === 'processing';
 
   useEffect(() => {
     if (!open) return;
@@ -129,13 +132,24 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     if (!open) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
+        if (uploadActive) return;
         e.stopPropagation();
         onClose();
       }
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [open, onClose]);
+  }, [open, onClose, uploadActive]);
+
+  useEffect(() => {
+    if (!uploadActive) return;
+    const warnBeforeLeave = (event: BeforeUnloadEvent) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeLeave);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeave);
+  }, [uploadActive]);
 
   const configOk = config?.status === 'OK';
   const customers = config?.data.customers ?? [];
@@ -239,6 +253,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
             <button
               type="button"
               onClick={onClose}
+              disabled={uploadActive}
               className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
               aria-label={t('onsite:common.back', { defaultValue: 'close' })}
             >
@@ -351,6 +366,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           <button
             type="button"
             onClick={onClose}
+            disabled={uploadActive}
             className={
               createdId
                 ? 'rounded-md px-3 py-1.5 text-xs font-medium text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -373,6 +389,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
               type="button"
               data-testid="onsite-wizard-start-analysis"
               onClick={handleStartAnalysis}
+              disabled={uploadActive}
               className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
             >
               {t('onsite:wizard.startAnalysis', { defaultValue: '开始分析' })}

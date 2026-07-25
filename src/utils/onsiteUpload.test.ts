@@ -6,7 +6,10 @@ import { requestOnsiteUpload } from './onsiteUpload';
 class FakeXMLHttpRequest {
   static current: FakeXMLHttpRequest | null = null;
 
-  readonly upload = { onprogress: null as ((event: ProgressEvent) => void) | null };
+  readonly upload = {
+    onprogress: null as ((event: ProgressEvent) => void) | null,
+    onload: null as (() => void) | null,
+  };
   readonly headers = new Map<string, string>();
   method = '';
   url = '';
@@ -17,6 +20,8 @@ class FakeXMLHttpRequest {
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
   onabort: (() => void) | null = null;
+  onloadend: (() => void) | null = null;
+  aborted = false;
 
   constructor() {
     FakeXMLHttpRequest.current = this;
@@ -37,6 +42,12 @@ class FakeXMLHttpRequest {
 
   send(body: Document | XMLHttpRequestBodyInit | null): void {
     this.sentBody = body;
+  }
+
+  abort(): void {
+    this.aborted = true;
+    this.onabort?.();
+    this.onloadend?.();
   }
 }
 
@@ -86,7 +97,7 @@ test('requestOnsiteUpload resolves 207 results and reports transfer progress', a
   assert.deepEqual(await pending, [
     { ok: true, originalName: 'logs.zip', unpackedDir: '/tmp/unpacked-1' },
   ]);
-  assert.deepEqual(progress, [50]);
+  assert.deepEqual(progress, [50, 100]);
   assert.equal(refreshedToken, 'new-token');
 });
 
@@ -119,4 +130,37 @@ test('requestOnsiteUpload rejects network failures instead of silently returning
   xhr.onerror?.();
 
   await assert.rejects(pending, /检查网络连接/);
+});
+
+test('requestOnsiteUpload holds at 99 while processing and only reaches 100 after response', async () => {
+  const progress: number[] = [];
+  const phases: string[] = [];
+  const pending = requestOnsiteUpload('problem-4', [makeFile('logs.zip')], {
+    onProgress: (value) => progress.push(value),
+    onPhase: (phase) => phases.push(phase),
+  });
+  const xhr = FakeXMLHttpRequest.current!;
+  xhr.upload.onprogress?.({ lengthComputable: true, loaded: 100, total: 100 } as ProgressEvent);
+  xhr.upload.onload?.();
+  assert.deepEqual(progress, [99, 99]);
+  assert.deepEqual(phases, ['transferring', 'processing']);
+  xhr.status = 207;
+  xhr.responseText = JSON.stringify({ results: [] });
+  xhr.onload?.();
+  await pending;
+  assert.deepEqual(progress, [99, 99, 100]);
+  assert.deepEqual(phases, ['transferring', 'processing', 'completed']);
+});
+
+test('requestOnsiteUpload aborts during transfer but ignores cancellation during processing', async () => {
+  const controller = new AbortController();
+  const pending = requestOnsiteUpload('problem-5', [makeFile('logs.zip')], { signal: controller.signal });
+  const xhr = FakeXMLHttpRequest.current!;
+  xhr.upload.onload?.();
+  controller.abort();
+  assert.equal(xhr.aborted, false);
+  xhr.status = 207;
+  xhr.responseText = JSON.stringify({ results: [] });
+  xhr.onload?.();
+  await pending;
 });
