@@ -33,7 +33,10 @@
     "createFailed": "创建失败,请稍后重试",
     "descriptionField": "问题描述",
     "descriptionPlaceholder": "尽量精确:大概时间点、用户、碰到了什么问题",
-    "descriptionRequired": "问题描述为必填项"
+    "descriptionRequired": "问题描述为必填项",
+    "entryService": "问题入口服务",
+    "entryServicePlaceholder": "例如 externalweb，代码分析将从该服务开始",
+    "optional": "（选填）"
   },
   "chat": {
     "userRole": "现场反馈",

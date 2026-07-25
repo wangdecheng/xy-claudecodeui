@@ -53,7 +53,7 @@ export interface NewIssueWizardProps {
 }
 
 /**
- * 把 wizard 收集的四项必填信息组装成首轮开场 prompt。
+ * 把 wizard 收集的必填信息和可选入口服务组装成首轮开场 prompt。
  * 设计:逐项罗列 + 一句明确指令,让 Claude 拿到结构化上下文后直接进入取证,
  * 而不是反问「客户/迭代/数据库是什么」。description 为空则返回空串(不预置)。
  */
@@ -62,13 +62,16 @@ function buildInitialPrompt(input: {
   iteration: string;
   database: string;
   description: string;
+  entryService: string;
 }): string {
   const desc = input.description.trim();
   if (!desc) return '';
+  const entryService = input.entryService.trim();
   const lines = [
     `客户:${input.customer}`,
     `版本:${input.iteration}`,
     `数据库:${input.database}`,
+    ...(entryService ? [`问题入口服务:${entryService}`] : []),
     `问题描述:${desc}`,
     '',
     '请基于以上信息开始现场取证:先定位相关服务分支与日志,再逐步排查根因。',
@@ -101,6 +104,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
   })();
   const [date, setDate] = useState(todayIso);
   const [description, setDescription] = useState('');
+  const [entryService, setEntryService] = useState('');
   const [creating, setCreating] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
@@ -115,6 +119,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     setDatabase('');
     setDate(todayIso);
     setDescription('');
+    setEntryService('');
     setErrorMsg(null);
     setCreatedId(null);
   }, [open, loadConfig, loadProblems]);
@@ -165,6 +170,9 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     if (matched && matched.branch !== null) {
       body.third_bridge_branch = matched.branch;
     }
+    if (entryService.trim()) {
+      body.entry_service = entryService.trim();
+    }
 
     setCreating(true);
     setErrorMsg(null);
@@ -199,6 +207,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
       iteration,
       database,
       description: description.trim(),
+      entryService,
     });
     if (prompt) {
       setInitialPrompt(createdId, prompt);
@@ -206,7 +215,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     selectProblem(createdId);
     navigate(`/onsite/${encodeURIComponent(createdId)}`);
     onClose();
-  }, [createdId, selectProblem, navigate, onClose, setInitialPrompt, customer, iteration, database, description]);
+  }, [createdId, selectProblem, navigate, onClose, setInitialPrompt, customer, iteration, database, description, entryService]);
 
   if (!open) return null;
 
@@ -269,6 +278,27 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
             <IterationSelect config={config} value={iteration} onChange={setIteration} />
             <DatabaseSelect value={database} onChange={setDatabase} />
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <label htmlFor="onsite-entry-service-input" className="text-xs font-medium text-foreground">
+              {t('onsite:wizard.entryService', { defaultValue: '问题入口服务' })}
+              <span className="ml-1 font-normal text-muted-foreground">
+                {t('onsite:wizard.optional', { defaultValue: '（选填）' })}
+              </span>
+            </label>
+            <input
+              id="onsite-entry-service-input"
+              data-testid="onsite-entry-service-input"
+              type="text"
+              value={entryService}
+              maxLength={200}
+              placeholder={t('onsite:wizard.entryServicePlaceholder', {
+                defaultValue: '例如 externalweb，代码分析将从该服务开始',
+              })}
+              onChange={(e) => setEntryService(e.target.value)}
+              className="rounded-md border border-input bg-background px-2 py-1.5 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring"
+            />
           </div>
 
           <div className="flex flex-col gap-1">

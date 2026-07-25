@@ -80,6 +80,8 @@ export type CreateProblemInput = {
   date?: string;
   /** 必填:问题描述(≤2000 字符)。空字符串会抛 DescriptionRequiredError。 */
   description: string;
+  /** 可选:结合代码分析时优先进入的服务名。空白值按 null 落盘。 */
+  entry_service?: string | null;
   /**
    * 创建者的 userId; 缺省时回退到 `userDb.getFirstUser().id`(平台/单用户模式)。
    * 路由层必须显式传 `req.user.id`; 此回退是给脚本/测试用的兜底, 不会
@@ -179,6 +181,7 @@ export const problemService = {
       throw new DescriptionRequiredError();
     }
     const storedDescription = trimmedDescription.slice(0, 2000);
+    const storedEntryService = input.entry_service?.trim().slice(0, 200) || null;
 
     // Problem ownership is security-critical and must be known before any
     // filesystem side effect. Route callers pass req.user.id explicitly;
@@ -253,6 +256,7 @@ export const problemService = {
       cwd: record.cwd,
       problem_json_path: record.problem_json_path,
       description: storedDescription,
+      entry_service: storedEntryService,
       created_at: today.toISOString(),
     };
     await writeFile(problemJsonPath, JSON.stringify(jsonPayload, null, 2), 'utf8');

@@ -183,6 +183,7 @@ type CreateBody = {
   database?: unknown;
   cwd?: unknown;
   description?: unknown;
+  entry_service?: unknown;
 };
 
 router.post('/problems', (req: Request, res: Response) => {
@@ -211,6 +212,9 @@ router.post('/problems', (req: Request, res: Response) => {
   const database = body.database as string;
   const cwd = body.cwd as string;
   const description = (body.description as string).trim();
+  const entryService = typeof body.entry_service === 'string'
+    ? body.entry_service.trim().slice(0, 200) || null
+    : null;
   const thirdBridgeBranch =
     typeof body.third_bridge_branch === 'string' && body.third_bridge_branch.length > 0
       ? (body.third_bridge_branch as string)
@@ -255,6 +259,7 @@ router.post('/problems', (req: Request, res: Response) => {
       database,
       cwd,
       description,
+      entry_service: entryService,
       userId,
     })
     .then((record: ProblemRecord) => {

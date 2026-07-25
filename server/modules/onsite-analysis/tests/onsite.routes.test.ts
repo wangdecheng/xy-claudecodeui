@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
@@ -414,11 +414,17 @@ test('POST 合法 body 返 201 + problem.json 落盘 + cwd 在 ONSITE_ROOT 下',
         database: 'db01',
         cwd: process.env.ONSITE_ROOT + '/山西公安',
         description: '客户反馈登录失败,traceId=abc123',
+        entry_service: 'externalweb',
       });
 
     assert.equal(response.status, 201);
     assert.ok(response.body.id);
     assert.ok(response.body.id.startsWith(todayYyyymmdd()));
+    const problemJson = JSON.parse(await readFile(
+      path.join(process.env.ONSITE_ROOT!, response.body.id, 'problem.json'),
+      'utf8',
+    ));
+    assert.equal(problemJson.entry_service, 'externalweb');
   });
 });
 

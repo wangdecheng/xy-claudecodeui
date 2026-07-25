@@ -74,8 +74,16 @@
       "branch": "hljyj_547157"
     },
     {
+      "label": "交通银行",
+      "branch": "jtyh"
+    },
+    {
       "label": "光大银行",
       "branch": "gdyh"
+    },
+    {
+      "label": "中石油",
+      "branch": "zsy"
     }
   ],
   "iterations": [
@@ -87,7 +95,7 @@
     "release_5.2_3.2_20250627",
     "release_5.2_3.2_20250328",
     "release_5.2_3.2_20241220",
-    "release_5.2_3.2_20241013",
+    "release_5.2_3.2_20241018",
     "release_5.2_3.2_20240802",
     "release_5.2_3.2_20240726",
     "release_5.2_3.2_20240524",

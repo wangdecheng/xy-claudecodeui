@@ -86,6 +86,7 @@ test('create 写入 YYYYMMDDHHMMSS-客户 目录 + problem.json', async () => {
       database: 'db01',
       cwd: process.env.ONSITE_ROOT + `/${yyyymmdd}-山西公安`,
       description: '现场反馈第三方登录失败,traceId=abc123',
+      entry_service: 'externalweb',
     });
     // 新格式: YYYYMMDDHHMMSS-山西公安 (14 位数字 + - + 客户名)
     assert.ok(
@@ -99,8 +100,26 @@ test('create 写入 YYYYMMDDHHMMSS-客户 目录 + problem.json', async () => {
     const json = JSON.parse(await (await import('node:fs/promises')).readFile(jsonPath, 'utf8'));
     assert.equal(json.customer, '山西公安');
     assert.equal(json.iteration, 'master_5.2_3.2');
+    assert.equal(json.entry_service, 'externalweb');
     // 77502ed 废弃 pending_info 后, 新建问题默认 status='analyzing'。
     assert.equal(json.status, 'analyzing');
+  });
+});
+
+test('create 未填写问题入口服务时 problem.json 写入 null', async () => {
+  await withIsolatedEnv(async () => {
+    const record = await problemService.create({
+      customer: '山西公安',
+      third_bridge_branch: 'master_5.2_3.2',
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: process.env.ONSITE_ROOT + '/山西公安',
+      description: '入口服务未知',
+    });
+
+    const jsonPath = path.join(process.env.ONSITE_ROOT!, record.id, 'problem.json');
+    const json = JSON.parse(await (await import('node:fs/promises')).readFile(jsonPath, 'utf8'));
+    assert.equal(json.entry_service, null);
   });
 });
 
