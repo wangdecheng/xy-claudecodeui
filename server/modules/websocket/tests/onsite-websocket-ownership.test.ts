@@ -11,10 +11,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+
 import type { WebSocket, WebSocketServer } from 'ws';
 
 import { closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
-import { problemService } from '@/modules/onsite-analysis/problem.service.js';
+import { problemService } from '@/modules/onsite-analysis/index.js';
 import { onsiteWebSocketService } from '@/modules/websocket/services/onsite-websocket.service.js';
 
 type Listener = (...args: unknown[]) => void;
@@ -212,5 +213,51 @@ test('owner 身份来自 request.user，hello 省略 userId 仍可绑定且不�
     );
     const session = sessionsDb.findOnsiteSessionByCwd(problem.cwd);
     assert.equal(session?.user_id, alice.id);
+    assert.ok(
+      ws.frames.some((frame) => (
+        frame.kind === 'onsite_session_ready'
+        && frame.problemId === problem.id
+        && frame.sessionId === problem.id
+      )),
+      'hello 成功后必须返回当前 canonical session id',
+    );
+  });
+});
+
+test('续聊 hello 返回首次运行后迁移的 provider UUID', async () => {
+  await withIsolatedEnv(async ({ alice }) => {
+    const problem = await problemService.create({
+      customer: 'WsResumeCo',
+      third_bridge_branch: null,
+      iteration: 'release-test',
+      database: 'mysql',
+      cwd: `${process.env.ONSITE_ROOT}/WsResumeCo`,
+      description: 'WebSocket resumed session mapping test',
+      userId: alice.id,
+    });
+    // Model the persisted state after the first run: assignProviderSessionId
+    // migrates the eager problemId row to the provider UUID.
+    const providerSessionId = `provider-${problem.id}`;
+    sessionsDb.assignProviderSessionId(problem.id, providerSessionId);
+
+    const ws = new FakeWebSocket();
+    attachConnection(ws, alice);
+    ws.emit(
+      'message',
+      Buffer.from(JSON.stringify({
+        kind: 'onsite',
+        problemId: problem.id,
+        cwd: problem.cwd,
+      })),
+    );
+
+    assert.ok(
+      ws.frames.some((frame) => (
+        frame.kind === 'onsite_session_ready'
+        && frame.problemId === problem.id
+        && frame.sessionId === providerSessionId
+      )),
+      '续聊必须在发送前恢复 provider UUID 映射',
+    );
   });
 });

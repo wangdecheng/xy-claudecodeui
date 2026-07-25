@@ -31,6 +31,7 @@ import {
   resolveOnsiteRoot,
   type StoredMessage,
 } from '@/modules/onsite-analysis/index.js';
+import { chatRunRegistry } from '@/modules/websocket/services/chat-run-registry.service.js';
 import type { AuthenticatedWebSocketRequest } from '@/shared/types.js';
 import { parseIncomingJsonObject } from '@/shared/utils.js';
 
@@ -126,7 +127,7 @@ type OnsiteWebSocket = WebSocket & {
  * `userId` 必传（断言见 sessions.db 的 assertSessionUserId），且只能来自
  * WebSocket upgrade request 上的认证用户。若该行已存在，不覆盖归属。
  */
-function ensureOnsiteSession(problemId: string, cwd: string, userId: number): void {
+function ensureOnsiteSession(problemId: string, cwd: string, userId: number): string {
   try {
     // session_id 可能在首次 run 后被 assignProviderSessionId 从
     // problem.id 更新为 UUID。先按 problemId 查,查不到再按 cwd 查。
@@ -134,9 +135,9 @@ function ensureOnsiteSession(problemId: string, cwd: string, userId: number): vo
     if (!existing) {
       existing = sessionsDb.findOnsiteSessionByCwd(cwd);
     }
-    if (existing) return;
+    if (existing) return existing.session_id;
     const rec = onsiteProblemsDb.findById(problemId);
-    sessionsDb.createOnsiteSession(problemId, 'claude', cwd, {
+    return sessionsDb.createOnsiteSession(problemId, 'claude', cwd, {
       cwd,
       third_bridge_branch: rec?.third_bridge_branch ?? null,
       iteration: rec?.iteration ?? '',
@@ -148,6 +149,9 @@ function ensureOnsiteSession(problemId: string, cwd: string, userId: number): vo
       '[onsite-ws] ensureOnsiteSession failed:',
       err instanceof Error ? err.message : String(err),
     );
+    return sessionsDb.getSessionById(problemId)?.session_id
+      ?? sessionsDb.findOnsiteSessionByCwd(cwd)?.session_id
+      ?? problemId;
   }
 }
 
@@ -318,11 +322,32 @@ export const onsiteWebSocketService = {
           // 否则后续 chat.send(sessionId=problemId)会因 SESSION_NOT_FOUND 静默失败
           // (卡片死电路的第三处根因:onsite 会话从未被创建)。同步、幂等。
           //
-          ensureOnsiteSession(
+          const sessionId = ensureOnsiteSession(
             validation.payload.problemId,
             validation.payload.cwd,
             authenticatedUserId,
           );
+
+          // The first onsite run migrates sessions.session_id from problemId
+          // to the provider-native UUID. A resumed run does not emit another
+          // session_created frame, so the browser must learn that canonical id
+          // during hello or it will discard every live frame as "another
+          // session". Also expose the active registry key: during the narrow
+          // first-run handoff window it can still be the original problemId.
+          const activeSessionId = chatRunRegistry.isProcessing(validation.payload.problemId)
+            ? validation.payload.problemId
+            : chatRunRegistry.isProcessing(sessionId)
+              ? sessionId
+              : null;
+          if (ws.readyState === ws.OPEN) {
+            ws.send(JSON.stringify({
+              kind: 'onsite_session_ready',
+              problemId: validation.payload.problemId,
+              sessionId,
+              activeSessionId,
+              timestamp: new Date().toISOString(),
+            }));
+          }
         } catch (err: unknown) {
           const message = err instanceof Error ? err.message : String(err);
           console.warn('[onsite-ws] hello processing failed:', message);

@@ -40,7 +40,11 @@
     "assistantRole": "Claude · 取证顺序:日志 → 源码 → DB",
     "placeholder": "补充信息、粘贴日志片段,或让 Claude 继续下一步取证…",
     "composerHint": "仅对接 Claude Code · 工作目录锁定在 {{cwd}}",
-    "emptyDefault": "暂无消息"
+    "emptyDefault": "暂无消息",
+    "activity": {
+      "analyzing": "正在分析",
+      "stopping": "正在停止"
+    }
   },
   "status": {
     "pending_info": "待补充信息",

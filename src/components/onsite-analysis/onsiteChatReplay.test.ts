@@ -15,7 +15,11 @@ import test from 'node:test';
 
 import type { OnsiteStoredMessage } from '../../stores/onsiteStore';
 
-import { buildReplayedMessages, mergeReplayedMessages } from './onsiteChatReplay';
+import {
+  buildReplayedMessages,
+  mergeReplayedMessages,
+  mergeStoredMessages,
+} from './onsiteChatReplay';
 import type { OnsiteStreamMessage } from './onsiteChatReducer';
 
 function makeStored(over: Partial<OnsiteStoredMessage> = {}): OnsiteStoredMessage {
@@ -54,6 +58,27 @@ test('regression: loadMessages 不会覆盖已乐观插入的 user 消息(append
   assert.equal(merged[0]?.role, 'user');
   assert.equal(merged[1]?.role, 'assistant');
   assert.equal(merged[1]?.text, '你好,我是 Claude Code');
+});
+
+test('regression: idle subscribe 历史对账不会覆盖刚发送的首条 user 消息', () => {
+  const optimisticUser: OnsiteStreamMessage = {
+    id: 'm-initial',
+    role: 'user',
+    kind: 'text',
+    text: '问题描述:首条现场反馈',
+    ts: 1000,
+  };
+  // The idle ack can race with user-message persistence, so this snapshot may
+  // contain an assistant event without the just-sent user event yet.
+  const stored: OnsiteStoredMessage[] = [
+    makeStored({ role: 'assistant', content: '开始分析', ts: 1100 }),
+  ];
+
+  const merged = mergeStoredMessages([optimisticUser], stored);
+
+  assert.equal(merged.length, 2);
+  assert.equal(merged[0], optimisticUser, '历史对账必须保留乐观插入的首条消息');
+  assert.equal(merged[1]?.text, '开始分析');
 });
 
 test('regression: loadMessages 不会覆盖已到达的 WS 帧(append-only)', () => {

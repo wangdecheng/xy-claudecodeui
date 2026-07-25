@@ -172,6 +172,12 @@ export interface OnsiteChatFrame {
   kind?: string;
   role?: 'user' | 'assistant' | string;
   sessionId?: string;
+  problemId?: string;
+  activeSessionId?: string | null;
+  newSessionId?: string;
+  seq?: number;
+  isProcessing?: boolean;
+  pendingPermissions?: unknown[];
   id?: string | number;
   content?: string;
   text?: string;

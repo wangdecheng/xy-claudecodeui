@@ -13,8 +13,9 @@
  * 本地消息 id 形如 `m-<n>`(reducer makeId)或 `streaming-<n>`。两套命名空间天然
  * 不会撞,所以 set 判等即可。
  */
-import type { OnsiteStreamMessage } from './onsiteChatReducer';
 import type { OnsiteStoredMessage } from '../../stores/onsiteStore';
+
+import type { OnsiteStreamMessage } from './onsiteChatReducer';
 
 export function buildReplayedMessages(stored: OnsiteStoredMessage[]): OnsiteStreamMessage[] {
   return stored.map((m) => {
@@ -65,4 +66,17 @@ export function mergeReplayedMessages(
   }
   if (additions.length === 0) return current;
   return [...current, ...additions];
+}
+
+/**
+ * Reconcile one REST history response without replacing optimistic/live UI
+ * messages. Keep this boundary shared by initial history loading and the
+ * chat_subscribed idle reconciliation so future call sites cannot accidentally
+ * reintroduce a destructive setMessages(replayed).
+ */
+export function mergeStoredMessages(
+  current: OnsiteStreamMessage[],
+  stored: OnsiteStoredMessage[],
+): OnsiteStreamMessage[] {
+  return mergeReplayedMessages(current, buildReplayedMessages(stored));
 }

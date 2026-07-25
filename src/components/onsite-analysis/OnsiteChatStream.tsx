@@ -31,6 +31,7 @@ import { useOnsiteWebSocket } from '../../contexts/OnsiteWebSocketContext';
 import { useOnsiteStore } from '../../stores/onsiteStore';
 import type { PendingPermissionRequest } from '../chat/types/types';
 import { AskUserQuestionPanel } from '../chat/tools/components/InteractiveRenderers';
+import ActivityIndicator from '../chat/view/subcomponents/ActivityIndicator';
 
 import AnalysisFilesRow from './AnalysisFilesRow';
 import AnalysisInfoChips from './AnalysisInfoChips';
@@ -44,10 +45,12 @@ import {
   type OnsiteStreamMessage,
   type OnsiteStreamState,
 } from './onsiteChatReducer';
+import { mergeStoredMessages } from './onsiteChatReplay';
 import {
-  buildReplayedMessages,
-  mergeReplayedMessages,
-} from './onsiteChatReplay';
+  isOnsiteFrameForSession,
+  isStaleOnsiteIdleAck,
+  readOnsiteSessionReady,
+} from './onsiteSessionRouting';
 import { sqlTemplateFor } from './sqlTemplates';
 
 // ─── Stream message model ────────────────────────────────────────────────
@@ -111,13 +114,23 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
-  // sessionIdRef:初始为 problem.id,收到 session_created 后更新为 UUID。
-  // sendDraft / abort 从这里读取,确保首次 run 后 chat.send 用 UUID 发包,
-  // 与 CLI --resume 指向同一 session。
-  const sessionIdRef = useRef(problemId);
+  // 首次运行后 sessions.session_id 会从 problemId 迁移为 provider UUID。
+  // canonicalSessionIdRef 由 onsite hello ack 恢复，activeRunSessionIdRef
+  // 则保留本轮 run 的 registry key（首次迁移窗口内两者可能不同）。
+  const canonicalSessionIdRef = useRef(problemId);
+  const activeRunSessionIdRef = useRef<string | null>(null);
+  // 每轮 run 的最高已消费序号；重连后的 chat.subscribe 用它续传缺口。
+  const lastSeqRef = useRef(0);
+  // 防止发送前的 idle subscribe ack 清掉随后刚启动的新 run。
+  const subscribeSentAtRef = useRef(0);
+  const localRunStartedAtRef = useRef<number | null>(null);
   // problem 切换时重置
   useEffect(() => {
-    sessionIdRef.current = problemId;
+    canonicalSessionIdRef.current = problemId;
+    activeRunSessionIdRef.current = null;
+    lastSeqRef.current = 0;
+    subscribeSentAtRef.current = 0;
+    localRunStartedAtRef.current = null;
   }, [problemId]);
 
   // stream_delta 累积: Claude SDK 实时流不发完整 assistant text,而是连续
@@ -145,7 +158,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
   // 修复前 messages 仅来自 WS subscribe,切走后再切回看不到历史。
   // 用 cancelled 标记丢弃过期响应,避免快速切 problem 时旧 fetch 覆盖新 state。
   //
-  // 关键:用 setMessages 的 functional 形式 + mergeReplayedMessages 实现 append-only,
+  // 关键:用 setMessages 的 functional 形式 + mergeStoredMessages 实现 append-only,
   // 避免 fetch resolve 时把已乐观插入的 user 消息或已到达的 WS 帧覆盖掉
   // (Bug 复现:新建问题时首条 user 消息消失)。见 onsiteChatReplay.ts。
   useEffect(() => {
@@ -155,8 +168,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       const stored = await loadMessages(problemId);
       if (cancelled) return;
       if (stored.length === 0) return;
-      const replayed = buildReplayedMessages(stored);
-      setMessages((cur) => mergeReplayedMessages(cur, replayed));
+      setMessages((cur) => mergeStoredMessages(cur, stored));
     })();
     return () => {
       cancelled = true;
@@ -188,22 +200,84 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
   // Subscribe to WS frames.
   useEffect(() => {
-    return subscribe((event) => {
+    let cancelled = false;
+
+    const unsubscribe = subscribe((event) => {
       const ev = event as OnsiteChatFrame;
 
-      // session_created:首次 run 后服务端转发的 UUID,更新 sessionIdRef,
-      // 让后续 chat.send/abort 用 UUID 发包,CLI --resume 也指向同一 UUID。
+      // hello ack 是续聊恢复 canonical UUID 的权威来源。收到后立即订阅
+      // 当前 active run；服务端会重绑连接并按 lastSeq 补发遗漏帧。
+      const ready = readOnsiteSessionReady(ev, problemId);
+      if (ready) {
+        canonicalSessionIdRef.current = ready.sessionId;
+        const subscribeSessionId = ready.activeSessionId
+          ?? activeRunSessionIdRef.current
+          ?? ready.sessionId;
+        if (ready.activeSessionId) {
+          activeRunSessionIdRef.current = ready.activeSessionId;
+        }
+        subscribeSentAtRef.current = Date.now();
+        send({
+          type: 'chat.subscribe',
+          sessions: [{ sessionId: subscribeSessionId, lastSeq: lastSeqRef.current }],
+        });
+        return;
+      }
+
+      // 首次 run 才会收到 session_created；记录迁移后的 canonical UUID，
+      // 但本轮 active registry key 仍保持发送时的 id，确保停止操作可命中。
       if (ev.kind === 'session_created') {
-        const newId = (ev as Record<string, unknown>).newSessionId as string | undefined
-          ?? ev.sessionId;
+        const newId = ev.newSessionId ?? ev.sessionId;
         if (newId && typeof newId === 'string') {
-          sessionIdRef.current = newId;
+          canonicalSessionIdRef.current = newId;
         }
         return;
       }
 
       if (ev.kind === 'protocol_error') {
+        activeRunSessionIdRef.current = null;
+        localRunStartedAtRef.current = null;
         setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
+        return;
+      }
+
+      if (ev.kind === 'chat_subscribed') {
+        if (!isOnsiteFrameForSession(
+          ev.sessionId,
+          problemId,
+          canonicalSessionIdRef.current,
+          activeRunSessionIdRef.current,
+        )) return;
+
+        if (ev.isProcessing) {
+          if (ev.sessionId) activeRunSessionIdRef.current = ev.sessionId;
+          setRunState((state) => (
+            state.isProcessing
+              ? state
+              : reduceOnsiteRunState(state, { type: 'send.accepted', startedAt: Date.now() })
+          ));
+        } else {
+          if (isStaleOnsiteIdleAck(
+            localRunStartedAtRef.current,
+            subscribeSentAtRef.current,
+          )) return;
+
+          activeRunSessionIdRef.current = null;
+          localRunStartedAtRef.current = null;
+          setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
+
+          // A short run may finish while the socket is disconnected. Completed
+          // runs are not replayed by chat.subscribe, so reconcile from the
+          // authoritative history endpoint instead of requiring a page refresh.
+          void loadMessages(problemId).then((stored) => {
+            if (cancelled || activeRunSessionIdRef.current !== null || stored.length === 0) return;
+            setMessages((cur) => mergeStoredMessages(cur, stored));
+          });
+        }
+
+        if (Array.isArray(ev.pendingPermissions)) {
+          setPendingPermissions(ev.pendingPermissions as PendingPermissionRequest[]);
+        }
         return;
       }
 
@@ -222,7 +296,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
             requestId,
             toolName,
             input: (ev as Record<string, unknown>).input,
-            sessionId: sessionIdRef.current,
+            sessionId: activeRunSessionIdRef.current ?? canonicalSessionIdRef.current,
             receivedAt: new Date(),
           }];
         });
@@ -238,11 +312,20 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       }
 
       // Only react to frames tagged for this problem.
-      // sessionId 可能已更新为 UUID(sessionIdRef),两条都接受。
-      if (ev.sessionId && ev.sessionId !== problemId && ev.sessionId !== sessionIdRef.current) return;
+      if (!isOnsiteFrameForSession(
+        ev.sessionId,
+        problemId,
+        canonicalSessionIdRef.current,
+        activeRunSessionIdRef.current,
+      )) return;
       // If sessionId is missing, treat it as "for current problem" — the
       // server only allows one hello per WS so the only other sessionId
       // we'd see is the active problem's.
+
+      if (typeof ev.seq === 'number') {
+        if (ev.seq <= lastSeqRef.current) return;
+        lastSeqRef.current = ev.seq;
+      }
 
       // Discipline tally — single source of truth lives here and flows to
       // <DisciplineCounter> via props.
@@ -362,6 +445,8 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
         }
         applyReducer(ev);
         if (ev.kind === 'complete') {
+          activeRunSessionIdRef.current = null;
+          localRunStartedAtRef.current = null;
           setRunState((state) => reduceOnsiteRunState(state, { type: 'terminal' }));
         }
         return;
@@ -371,7 +456,12 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       applyReducer(ev);
       // thinking → silently dropped (no render target yet).
     });
-  }, [subscribe, problemId]);
+
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
+  }, [loadMessages, send, subscribe, problemId]);
 
   // Auto-scroll to bottom on new message.
   useEffect(() => {
@@ -393,10 +483,19 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       ...cur,
       { id: makeId(), role: 'user', kind: 'text', text: trimmed, ts: Date.now() },
     ]);
-    const accepted = send({ type: 'chat.send', sessionId: sessionIdRef.current, content: trimmed });
+    const sessionId = canonicalSessionIdRef.current;
+    const accepted = send({ type: 'chat.send', sessionId, content: trimmed });
+    const startedAt = Date.now();
+    if (accepted) {
+      activeRunSessionIdRef.current = sessionId;
+      lastSeqRef.current = 0;
+      localRunStartedAtRef.current = startedAt;
+    }
     setRunState((state) => reduceOnsiteRunState(
       state,
-      { type: accepted ? 'send.accepted' : 'send.rejected' },
+      accepted
+        ? { type: 'send.accepted', startedAt }
+        : { type: 'send.rejected' },
     ));
     setSending(false);
     return accepted;
@@ -424,7 +523,10 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
   const abort = () => {
     setRunState((state) => reduceOnsiteRunState(state, { type: 'abort.requested' }));
-    send({ type: 'chat.abort', sessionId: sessionIdRef.current });
+    send({
+      type: 'chat.abort',
+      sessionId: activeRunSessionIdRef.current ?? canonicalSessionIdRef.current,
+    });
   };
 
   // 交互式工具(AskUserQuestion)的权限决策回调,复用 chat 路径的
@@ -474,6 +576,17 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       sendDraft();
     }
   };
+
+  const activity = useMemo(() => {
+    if (!runState.isProcessing || runState.startedAt === null) return null;
+    return {
+      statusText: runState.isStopping
+        ? t('onsite:chat.activity.stopping', { defaultValue: '正在停止' })
+        : t('onsite:chat.activity.analyzing', { defaultValue: '正在分析' }),
+      canInterrupt: false,
+      startedAt: runState.startedAt,
+    };
+  }, [runState, t]);
 
   // ─── render ─────────────────────────────────────────────────────────
 
@@ -564,6 +677,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
               }
               return null;
             })}
+          </div>
+        )}
+        {pendingPermissions.length === 0 && (
+          <div data-testid="onsite-chat-activity" aria-live="polite">
+            <ActivityIndicator activity={activity} />
           </div>
         )}
         <input

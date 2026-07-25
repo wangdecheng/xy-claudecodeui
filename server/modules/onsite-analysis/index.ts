@@ -8,5 +8,6 @@ export {
 } from './problem-ownership.service.js';
 export {
   assertCwdUnderRoot,
+  problemService,
   resolveOnsiteRoot,
 } from './problem.service.js';

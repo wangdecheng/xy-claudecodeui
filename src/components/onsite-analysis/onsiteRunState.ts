@@ -1,15 +1,19 @@
 export type OnsiteRunState = {
   isProcessing: boolean;
+  isStopping: boolean;
+  startedAt: number | null;
 };
 
 export type OnsiteRunEvent =
-  | { type: 'send.accepted' }
+  | { type: 'send.accepted'; startedAt: number }
   | { type: 'send.rejected' }
   | { type: 'abort.requested' }
   | { type: 'terminal' };
 
 export const initialOnsiteRunState: OnsiteRunState = {
   isProcessing: false,
+  isStopping: false,
+  startedAt: null,
 };
 
 export function reduceOnsiteRunState(
@@ -18,12 +22,16 @@ export function reduceOnsiteRunState(
 ): OnsiteRunState {
   switch (event.type) {
     case 'send.accepted':
-      return { isProcessing: true };
+      return {
+        isProcessing: true,
+        isStopping: false,
+        startedAt: event.startedAt,
+      };
     case 'send.rejected':
     case 'terminal':
-      return { isProcessing: false };
+      return initialOnsiteRunState;
     case 'abort.requested':
-      return state;
+      return state.isProcessing ? { ...state, isStopping: true } : state;
     default:
       return state;
   }
