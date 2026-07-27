@@ -73,6 +73,7 @@ import { bootstrapConfig } from './modules/onsite-analysis/config.service.js';
 import { onsiteBroadcast } from './modules/onsite-analysis/onsite-broadcast.js';
 import { onWatcherChange, startOnsiteWatcher, stopOnsiteWatcher } from './modules/onsite-analysis/onsiteWatcher.js';
 import { configureWebPush } from './services/vapid-keys.js';
+import { startDailyContentRetention } from './services/content-retention.service.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 import { onsiteWebSocketService } from './modules/websocket/services/onsite-websocket.service.js';
 import { IS_PLATFORM } from './constants/config.js';
@@ -1827,6 +1828,8 @@ async function startServer() {
 
         console.log(`${c.info('[INFO]')} To run in development mode with hot-module replacement, go to http://${DISPLAY_HOST}:${VITE_PORT}`);
    
+        let stopDailyContentRetention = () => {};
+
         server.listen(SERVER_PORT, HOST, async () => {
             const appInstallPath = APP_ROOT;
             await writeLocalServerMarker().catch((error) => {
@@ -1865,12 +1868,18 @@ async function startServer() {
             startEnabledPluginServers().catch(err => {
                 console.error('[Plugins] Error during startup:', err.message);
             });
+
+            // Start retention after provider and onsite initial scans complete,
+            // so a missed 03:00 cleanup cannot race the startup reconciliation.
+            stopDailyContentRetention = startDailyContentRetention();
+            console.log('[INFO] Daily content retention scheduled for 03:00 local server time');
         });
 
         await closeSessionsWatcher();
         stopOnsiteWatcher();
         // Clean up plugin processes on shutdown
         const shutdownRuntimeServices = async () => {
+            stopDailyContentRetention();
             try {
                 await browserUseService.stopAllSessions();
             } catch (err) {

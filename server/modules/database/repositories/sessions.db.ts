@@ -129,8 +129,16 @@ type SessionRow = {
   user_id: number | null;
 };
 
+export type SessionRetentionRecord = SessionRow & {
+  kind: 'chat' | 'onsite' | string;
+  cwd: string | null;
+};
+
 const SESSION_ROW_COLUMNS =
   'session_id, provider, provider_session_id, project_path, jsonl_path, custom_name, isArchived, created_at, updated_at, user_id';
+
+const SESSION_RETENTION_COLUMNS =
+  `${SESSION_ROW_COLUMNS}, kind, cwd`;
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 
@@ -596,6 +604,27 @@ export const sessionsDb = {
       .all() as SessionRow[];
 
     return normalizeSessionRows(rows);
+  },
+
+  /**
+   * Returns every session row, including archived rows, for retention jobs.
+   * This intentionally exposes the session kind and onsite cwd so a cleanup
+   * pass can protect active onsite work without broadening normal read APIs.
+   */
+  getSessionsForRetention(): SessionRetentionRecord[] {
+    const db = getConnection();
+    const rows = db
+      .prepare(
+        `SELECT ${SESSION_RETENTION_COLUMNS}
+         FROM sessions`,
+      )
+      .all() as SessionRetentionRecord[];
+
+    return rows.map((row) => ({
+      ...normalizeSessionRow(row),
+      kind: row.kind,
+      cwd: row.cwd,
+    })) as SessionRetentionRecord[];
   },
 
   /**

@@ -654,7 +654,7 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
       >
         {messages.length > 0 &&
           messages.map((m) => (
-            <MessageBubble key={m.id} message={m} onRerun={insertIntoDraft} />
+            <MessageBubble key={m.id} message={m} problemId={problemId} onRerun={insertIntoDraft} />
           ))}
       </div>
 
@@ -768,9 +768,11 @@ export default function OnsiteChatStream({ problemId }: OnsiteChatStreamProps) {
 
 function MessageBubble({
   message,
+  problemId,
   onRerun,
 }: {
   message: OnsiteStreamMessage;
+  problemId: string;
   onRerun?: (hint: string) => void;
 }) {
   const isUser = message.kind === 'text' && message.role === 'user';
@@ -857,7 +859,7 @@ function MessageBubble({
         )}
         {isAssistant ? (
           <div className={baseCls}>
-            <CardRenderer text={message.text} {...(onRerun ? { onRerun } : {})} />
+            <CardRenderer text={message.text} problemId={problemId} {...(onRerun ? { onRerun } : {})} />
           </div>
         ) : isTool ? (
           /* 工具消息:默认折叠，显示工具名+摘要，点击展开 */

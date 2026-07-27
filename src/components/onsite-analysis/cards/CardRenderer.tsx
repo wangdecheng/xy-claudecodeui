@@ -21,6 +21,7 @@ import BlockedCard from './BlockedCard';
 import EvidenceCard from './EvidenceCard';
 import RootCauseCard from './RootCauseCard';
 import SqlCard from './SqlCard';
+import { CardFoot, DownloadButton } from './CardFoot';
 
 const CARD_REGEX = /<card\s+([^>]*?)\/?>([\s\S]*?)<\/card>|<card\s+([^>]*?)\/>/g;
 
@@ -104,6 +105,13 @@ function renderText(text: string, keyPrefix: string) {
   );
 }
 
+function conclusionFile(text: string): { fileName: string; filePath?: string } | null {
+  const match = text.match(/(?:^|[\s`])((?:\/[^\s`<>"']+)+\.(?:md|zip|tar\.gz|tgz))(?=$|[\s`<>"'])/im);
+  if (!match?.[1]) return null;
+  const name = match[1].split('/').pop();
+  return name ? { fileName: name, filePath: /\.(?:zip|tar\.gz|tgz)$/i.test(name) ? match[1] : undefined } : null;
+}
+
 function renderCard(seg: Segment, key: string, onRerun?: (hint: string) => void) {
   const title = seg.attrs.title;
   switch (seg.cardType) {
@@ -133,17 +141,28 @@ function renderCard(seg: Segment, key: string, onRerun?: (hint: string) => void)
 export interface CardRendererProps {
   text: string;
   onRerun?: (hint: string) => void;
+  problemId?: string;
 }
 
-export default function CardRenderer({ text, onRerun }: CardRendererProps) {
+export default function CardRenderer({ text, onRerun, problemId }: CardRendererProps) {
   const segments = parseAiText(text);
+  const file = conclusionFile(text);
   return (
     <>
       {segments.map((seg, i) => {
         const key = `seg-${i}`;
         if (seg.kind === 'card') return renderCard(seg, key, onRerun);
-        return <Fragment key={key}>{renderText(seg.text, key)}</Fragment>;
+        return (
+          <Fragment key={key}>
+            {renderText(seg.text, key)}
+          </Fragment>
+        );
       })}
+      {file && (
+        <CardFoot>
+          <DownloadButton content={text} fileName={file.fileName} filePath={file.filePath} problemId={problemId} />
+        </CardFoot>
+      )}
     </>
   );
 }

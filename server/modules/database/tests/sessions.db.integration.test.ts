@@ -82,3 +82,31 @@ test('repository reads normalize SQLite UTC timestamps to ISO strings', async ()
     assert.match(row?.updated_at ?? '', /^\d{4}-\d{2}-\d{2}T/);
   });
 });
+
+test('retention query includes archived rows and onsite metadata', async () => {
+  await withIsolatedDatabase(() => {
+    sessionsDb.createSession('retention-chat', 'codex', '/workspace/demo-project', 1);
+    sessionsDb.createOnsiteSession(
+      'retention-onsite',
+      'claude',
+      '/workspace/demo-project',
+      {
+        cwd: '/workspace/demo-project/problem-1',
+        third_bridge_branch: null,
+        iteration: 'iteration-1',
+        database: 'mysql',
+      },
+      1,
+    );
+    sessionsDb.updateSessionIsArchived('retention-chat', true);
+
+    const rows = sessionsDb.getSessionsForRetention();
+    const archivedChat = rows.find((row) => row.session_id === 'retention-chat');
+    const onsite = rows.find((row) => row.session_id === 'retention-onsite');
+
+    assert.equal(archivedChat?.isArchived, 1);
+    assert.equal(archivedChat?.kind, 'chat');
+    assert.equal(onsite?.kind, 'onsite');
+    assert.equal(onsite?.cwd, '/workspace/demo-project/problem-1');
+  });
+});

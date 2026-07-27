@@ -7,7 +7,9 @@
  */
 
 import { useState } from 'react';
-import { Copy, RefreshCw } from 'lucide-react';
+import { Copy, Download, RefreshCw } from 'lucide-react';
+
+import { requestOnsiteDownload } from '../../../utils/onsiteDownload';
 
 const BTN_CLS =
   'inline-flex items-center gap-1 rounded-md border border-border bg-secondary px-2 py-0.5 text-[11px] text-foreground hover:border-primary/50';
@@ -45,6 +47,39 @@ export function RerunButton({ onRerun, hint }: { onRerun: (hint: string) => void
     >
       <RefreshCw className="h-3 w-3" />
       补日志后重跑分析
+    </button>
+  );
+}
+
+export function DownloadButton({ content, fileName, filePath, problemId }: { content: string; fileName: string; filePath?: string; problemId?: string }) {
+  return (
+    <button
+      type="button"
+      data-testid="onsite-card-download"
+      className={BTN_CLS}
+      onClick={async () => {
+        if (filePath && problemId) {
+          const response = await requestOnsiteDownload(problemId, filePath);
+          if (!response.ok) return;
+          const url = URL.createObjectURL(await response.blob());
+          const anchor = document.createElement('a');
+          anchor.href = url;
+          anchor.download = fileName;
+          anchor.click();
+          URL.revokeObjectURL(url);
+          return;
+        }
+        const blob = new Blob([content], { type: 'text/markdown;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const anchor = document.createElement('a');
+        anchor.href = url;
+        anchor.download = fileName;
+        anchor.click();
+        URL.revokeObjectURL(url);
+      }}
+    >
+      <Download className="h-3 w-3" />
+      下载结论
     </button>
   );
 }

@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 import express from 'express';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import request from 'supertest';
@@ -688,6 +688,33 @@ test('GET /api/onsite/problems/:id/files 返 200 + file 数组', async () => {
   });
 });
 
+test('GET /api/onsite/problems/:id/download 返回问题目录内的 ZIP 文件', async () => {
+  await withIsolatedEnv(async () => {
+    const { problemService } = await import('../problem.service.js');
+    const created = await problemService.create({
+      customer: '下载测试',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: path.join(process.env.ONSITE_ROOT!, '下载测试'),
+      description: '下载测试占位描述',
+    });
+    const archivePath = path.join(created.cwd, '问题排查报告.zip');
+    await writeFile(archivePath, Buffer.from('zip-content'));
+
+    const response = await request(buildApp()).get(
+      `/api/onsite/problems/${encodeURIComponent(created.id)}/download?path=${encodeURIComponent(archivePath)}`,
+    );
+
+    assert.equal(response.status, 200);
+    assert.match(
+      response.headers['content-disposition'] ?? '',
+      /filename\*=UTF-8''%E9%97%AE%E9%A2%98%E6%8E%92%E6%9F%A5%E6%8A%A5%E5%91%8A\.zip/,
+    );
+    assert.equal(response.headers['content-length'], '11');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // DELETE /api/onsite/problems/:id
 // ---------------------------------------------------------------------------
@@ -780,6 +807,9 @@ test('所有端点需 auth (401 without token)', async () => {
 
     const files = await request(app).get('/api/onsite/problems/foo/files');
     assert.equal(files.status, 401);
+
+    const download = await request(app).get('/api/onsite/problems/foo/download?path=%2Ftmp%2Freport.zip');
+    assert.equal(download.status, 401);
 
     const del = await request(app).delete('/api/onsite/problems/foo');
     assert.equal(del.status, 401);

@@ -17,8 +17,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
+import path from 'node:path';
 
 import express, { type Request, type Response } from 'express';
 import multer from 'multer';
@@ -665,6 +666,22 @@ router.get('/problems/:id/files', async (req, res) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'list files failed';
     res.status(500).json({ error: 'LIST_FILES_FAILED', message });
+  }
+});
+
+router.get('/problems/:id/download', async (req, res) => {
+  try {
+    const problem = await problemService.getById(String(req.params.id));
+    const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+    if (!problem || !requestedPath) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+    const resolved = path.resolve(requestedPath);
+    const problemRoot = path.resolve(problem.cwd) + path.sep;
+    if (!resolved.startsWith(problemRoot)) return res.status(403).json({ error: 'FILE_OUTSIDE_PROBLEM' });
+    if (!(await stat(resolved)).isFile()) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+    return res.download(resolved, path.basename(resolved));
+  } catch (error: any) {
+    if (error?.code === 'ENOENT') return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+    return res.status(500).json({ error: 'DOWNLOAD_FAILED' });
   }
 });
 
