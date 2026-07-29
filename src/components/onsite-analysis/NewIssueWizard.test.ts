@@ -30,3 +30,14 @@ test('问题入口服务是可选字段，并传入 problem.json 与首轮代码
     '问题入口服务不得参与必填校验',
   );
 });
+
+test('customer submission stays directory-backed and sends only the confirmed label', async () => {
+  const source = await readFile(wizardSourceUrl, 'utf8');
+
+  assert.match(source, /const customerIsConfigured = matchedCustomer !== undefined/);
+  assert.match(source, /customerIsConfigured &&/);
+  assert.match(source, /const matchedCustomer = customers\.find\(\(candidate\) => candidate\.label === customer\)/);
+  assert.match(source, /const body: Record<string, string> = \{\s*customer,\s*iteration,/s);
+  assert.doesNotMatch(source, /body\.searchTerm/);
+  assert.match(source, /body\.third_bridge_branch = matchedCustomer\.branch/);
+});

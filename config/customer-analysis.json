@@ -84,6 +84,10 @@
     {
       "label": "中石油",
       "branch": "zsy"
+    },
+    {
+      "label": "中海油",
+      "branch": "zhy_anke"
     }
   ],
   "iterations": [

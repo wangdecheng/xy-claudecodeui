@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rm, stat } from 'node:fs/promises';
+import { realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -44,6 +44,7 @@ import {
   DescriptionRequiredError,
   ProblemRecord,
   problemService,
+  resolveOnsiteRoot,
   sanitizeCustomerLabel,
 } from './problem.service.js';
 import { messagesStore, type StoredMessage } from './messages-store.service.js';
@@ -674,9 +675,24 @@ router.get('/problems/:id/download', async (req, res) => {
     const problem = await problemService.getById(String(req.params.id));
     const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
     if (!problem || !requestedPath) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
-    const resolved = path.resolve(requestedPath);
-    const problemRoot = path.resolve(problem.cwd) + path.sep;
-    if (!resolved.startsWith(problemRoot)) return res.status(403).json({ error: 'FILE_OUTSIDE_PROBLEM' });
+    // Claude Code may create a conclusion archive directly in ONSITE_ROOT
+    // (older sessions did this), while uploaded/materialized evidence lives
+    // below problem.cwd. Resolve real paths so macOS's case-insensitive file
+    // system does not reject `/Work/...` when the configured path uses
+    // `/work/...`.
+    const resolved = await realpath(path.resolve(requestedPath));
+    const problemRoot = await realpath(path.resolve(problem.cwd));
+    const onsiteRoot = await realpath(path.resolve(resolveOnsiteRoot()));
+    const relativeToProblem = path.relative(problemRoot, resolved);
+    const relativeToOnsiteRoot = path.relative(onsiteRoot, resolved);
+    const inProblem = relativeToProblem !== ''
+      && !relativeToProblem.startsWith('..')
+      && !path.isAbsolute(relativeToProblem);
+    const inOnsiteRoot = relativeToOnsiteRoot !== ''
+      && !relativeToOnsiteRoot.includes(path.sep)
+      && !relativeToOnsiteRoot.startsWith('..')
+      && !path.isAbsolute(relativeToOnsiteRoot);
+    if (!inProblem && !inOnsiteRoot) return res.status(403).json({ error: 'FILE_OUTSIDE_PROBLEM' });
     if (!(await stat(resolved)).isFile()) return res.status(404).json({ error: 'FILE_NOT_FOUND' });
     return res.download(resolved, path.basename(resolved));
   } catch (error: any) {

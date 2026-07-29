@@ -12,6 +12,8 @@
     "date": "问题日期",
     "customer": "客户",
     "customerPlaceholder": "请选择客户",
+    "customerSearchPlaceholder": "输入客户名称或三平台分支",
+    "customerNoMatch": "无匹配客户",
     "thirdPartyHint": "三平台分支(可选)",
     "noThirdParty": "无三平台分支",
     "iteration": "版本",

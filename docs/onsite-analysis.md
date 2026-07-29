@@ -49,9 +49,26 @@ npm run dev   # 同启 server:dev + vite client
 | 2. traceId 0 命中 → blocked | 主信号(AI 文本含"未找到/0 结果")+ 强信号(tool_result 中 grep ... 0 行)→ StateMachine 切 `blocked` | `server/modules/onsite-analysis/discipline/discipline-trace-id.middleware.ts` |
 | 3. 写原日志双层防护 | 硬层:SDK `disallowedTools` 黑名单(7×7 glob × 写动作);软层:middleware 检测 tool_result 中 `rm / tee / sed -i / >` + `*.log / problem.json` | `server/modules/onsite-analysis/discipline/discipline-write-protection.middleware.ts` + `onsite-path-blacklist.service.ts` |
 
+## 文件浏览与下载
+
+**存储不变量**:所有用户通过本系统上传、打包、下载的文件,一律落在 `~/work/customer-onsite-analysis`(`ONSITE_ROOT`)子树内。该约束在现有代码中已天然满足(上传/打包产物落 `problem.cwd/unpacked-N/`,Claude 结论归档落 ONSITE_ROOT),不新增落点逻辑,仅以 [ADR 0002](./adr/0002-onsite-files-browser-and-storage-invariant.md) 记录为不变量,并以越界下载测试作机器守护。
+
+**两套下载入口**(详见 ADR 0002):
+
+| 入口 | 端点 | 路径语义 | 作用域 |
+|---|---|---|---|
+| 卡片「下载结论」按钮 | `GET /api/onsite/problems/:id/download?path=<绝对>` | 绝对路径,从 AI 文本正则抓取 | 绑 problem,`problem.cwd` 子树或 ONSITE_ROOT 根层直接子文件 |
+| 文件浏览器(新) | `GET /api/onsite/files/tree?dir=<相对>` + `GET /api/onsite/files/download?path=<相对>&token=<token>` | 相对 ONSITE_ROOT | 不绑 problem,任意深层文件,登录即可 |
+
+文件浏览器入口在 `IssueListSidebar` 顶部「📁 文件」按钮,点开右侧抽屉,懒加载目录树,点文件即下载(后端 `res.download` 流式直发,浏览器原生下载)。隐藏点号开头项(`.claude/` 等会话 JSONL 所在目录不列)。鉴权放宽到"已登录 + 路径不越界",不做 problem-owner 隔离(个人工具定位)。
+
+卡片下载按钮保留旧端点,仅修**静默失败**:失败时按钮旁短暂显示红色错误文字(复刻 `CopyButton` 临时态),不再闷头返回。"不出现下载按钮"不改 `conclusionFile` 正则,由文件浏览器兜底。
+
 ## 已知限制
 
 - **移动端**:UI 复用主应用响应式,但新建向导在窄屏下可能挤压(后续 batch 优化)
+- **卡片下载按钮依赖 AI 输出路径**:`conclusionFile()` 正则抓 AI 文本里的绝对路径,抓不到则按钮不出现。不依赖 AI 路径的场景请走文件浏览器。
+- **文件浏览器不做 owner 隔离**:任何已登录用户可下载 ONSITE_ROOT 子树内任意文件,不按 problem owner 过滤。
 - **会话持久化**:`GET /api/onsite/problems/:id/messages` 端点(server ring buffer,500 条)让刷新页面能回看会话;但**进程重启即丢** — 重要结论请落到 `analysis/` 子目录或 problem.json
 - **30s 退避**:WS 断线后客户端用 30s 指数退避重连,见 `src/contexts/OnsiteWebSocketContext.tsx`
 - **Provider 锁定**:onsite 路由下 provider 切换器只显示 `Claude Code`;其他 Provider(Cursor / Codex / Gemini / OpenCode)的入口保持现状

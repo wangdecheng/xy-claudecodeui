@@ -153,6 +153,8 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
 
   const configOk = config?.status === 'OK';
   const customers = config?.data.customers ?? [];
+  const matchedCustomer = customers.find((candidate) => candidate.label === customer);
+  const customerIsConfigured = matchedCustomer !== undefined;
   const isFirstCustomer = useMemo(() => {
     if (!customer || customers.length === 0) return false;
     return customer === customers[0]?.label;
@@ -160,7 +162,7 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
 
   const canSubmit =
     configOk &&
-    customer.length > 0 &&
+    customerIsConfigured &&
     iteration.length > 0 &&
     database.length > 0 &&
     date.length > 0 &&
@@ -171,18 +173,17 @@ export default function NewIssueWizard({ open, onClose }: NewIssueWizardProps) {
     e.preventDefault();
     if (!canSubmit) return;
 
-    const matched = customers.find((c) => c.label === customer);
     const body: Record<string, string> = {
       customer,
       iteration,
       database,
       date,
       description: description.trim().slice(0, 2000),
-      cwd: matched?.branch ?? customer, // fallback to customer label; server validates cwd
+      cwd: matchedCustomer?.branch ?? customer, // fallback to customer label; server validates cwd
     };
     // CRITICAL: when the customer is "no third-party", omit branch entirely.
-    if (matched && matched.branch !== null) {
-      body.third_bridge_branch = matched.branch;
+    if (matchedCustomer && matchedCustomer.branch !== null) {
+      body.third_bridge_branch = matchedCustomer.branch;
     }
     if (entryService.trim()) {
       body.entry_service = entryService.trim();

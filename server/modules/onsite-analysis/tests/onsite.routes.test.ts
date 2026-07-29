@@ -715,6 +715,29 @@ test('GET /api/onsite/problems/:id/download 返回问题目录内的 ZIP 文件'
   });
 });
 
+test('GET /api/onsite/problems/:id/download 返回 ONSITE_ROOT 根目录下的 ZIP 文件', async () => {
+  await withIsolatedEnv(async () => {
+    const { problemService } = await import('../problem.service.js');
+    const created = await problemService.create({
+      customer: '下载测试',
+      third_bridge_branch: null,
+      iteration: 'master_5.2_3.2',
+      database: 'db01',
+      cwd: path.join(process.env.ONSITE_ROOT!, '下载测试'),
+      description: '下载测试占位描述',
+    });
+    const archivePath = path.join(process.env.ONSITE_ROOT!, 'upload-log-troubleshooting-skill.zip');
+    await writeFile(archivePath, Buffer.from('zip-content'));
+
+    const response = await request(buildApp()).get(
+      `/api/onsite/problems/${encodeURIComponent(created.id)}/download?path=${encodeURIComponent(archivePath)}`,
+    );
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers['content-length'], '11');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // DELETE /api/onsite/problems/:id
 // ---------------------------------------------------------------------------
