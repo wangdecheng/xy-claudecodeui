@@ -1870,9 +1870,9 @@ async function startServer() {
             });
 
             // Start retention after provider and onsite initial scans complete,
-            // so a missed 03:00 cleanup cannot race the startup reconciliation.
+            // so a missed 12:00 cleanup cannot race the startup reconciliation.
             stopDailyContentRetention = startDailyContentRetention();
-            console.log('[INFO] Daily content retention scheduled for 03:00 local server time');
+            console.log('[INFO] Daily content retention scheduled for 12:00 local server time');
         });
 
         await closeSessionsWatcher();

@@ -233,13 +233,13 @@ test('cleanup keeps analyzing onsite problems and continues after a failure', as
   assert.equal(errors.length, 1);
 });
 
-test('getNextRetentionRunAt returns the next local 03:00', () => {
+test('getNextRetentionRunAt returns the next local 12:00', () => {
   assert.equal(
-    getNextRetentionRunAt(new Date('2026-07-27T02:59:00.000')).getHours(),
-    3,
+    getNextRetentionRunAt(new Date('2026-07-27T11:59:00.000')).getHours(),
+    12,
   );
   assert.equal(
-    getNextRetentionRunAt(new Date('2026-07-27T03:00:00.000')).getDate(),
+    getNextRetentionRunAt(new Date('2026-07-27T12:00:00.000')).getDate(),
     28,
   );
 });
