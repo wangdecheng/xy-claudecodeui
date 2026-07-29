@@ -15,11 +15,12 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Plus, Search } from 'lucide-react';
-
+import { FolderOpen, Plus, Search } from 'lucide-react';
 import type { ProblemListItem, ProblemStatus } from '@shared/onsite-types';
 
 import { useOnsiteStore } from '../../stores/onsiteStore';
+
+import FilesBrowserDrawer from './FilesBrowserDrawer';
 import IssueListItem from './IssueListItem';
 import NewIssueWizard from './NewIssueWizard';
 
@@ -48,6 +49,7 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
 
   const [filter, setFilter] = useState('');
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [filesOpen, setFilesOpen] = useState(false);
 
   // Initial load (also re-runs after wizard closes via store updates).
   useEffect(() => {
@@ -101,6 +103,15 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
           <Plus className="h-3.5 w-3.5" />
           {t('onsite:nav.newIssue', { defaultValue: '新建现场问题' })}
         </button>
+        <button
+          type="button"
+          onClick={() => setFilesOpen(true)}
+          data-testid="onsite-files-button"
+          className="inline-flex w-full items-center justify-center gap-1 rounded-md border border-input bg-background px-3 py-2 text-xs font-medium text-foreground hover:bg-muted"
+        >
+          <FolderOpen className="h-3.5 w-3.5" />
+          {t('onsite:files.button', { defaultValue: '📁 文件' })}
+        </button>
       </div>
 
       <div className="relative border-b border-border px-3 py-2">
@@ -148,6 +159,7 @@ export default function IssueListSidebar({ currentProblemId }: IssueListSidebarP
       </div>
 
       <NewIssueWizard open={wizardOpen} onClose={() => setWizardOpen(false)} />
+      <FilesBrowserDrawer open={filesOpen} onClose={() => setFilesOpen(false)} />
     </aside>
   );
 }

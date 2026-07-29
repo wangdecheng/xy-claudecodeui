@@ -52,15 +52,38 @@ export function RerunButton({ onRerun, hint }: { onRerun: (hint: string) => void
 }
 
 export function DownloadButton({ content, fileName, filePath, problemId }: { content: string; fileName: string; filePath?: string; problemId?: string }) {
+  const [error, setError] = useState<string | null>(null);
+
+  const flashError = (message: string) => {
+    setError(message);
+    setTimeout(() => setError(null), 1500);
+  };
+
   return (
     <button
       type="button"
       data-testid="onsite-card-download"
-      className={BTN_CLS}
+      className={error ? `${BTN_CLS} border-destructive/50 text-destructive` : BTN_CLS}
       onClick={async () => {
+        setError(null);
         if (filePath && problemId) {
-          const response = await requestOnsiteDownload(problemId, filePath);
-          if (!response.ok) return;
+          let response: Response;
+          try {
+            response = await requestOnsiteDownload(problemId, filePath);
+          } catch {
+            flashError('下载失败:网络错误');
+            return;
+          }
+          if (!response.ok) {
+            // 403 = 路径越界;404 = 文件不存在;其余兜底。
+            const message = response.status === 403
+              ? '下载失败:路径越界'
+              : response.status === 404
+                ? '下载失败:文件不存在'
+                : `下载失败 (HTTP ${response.status})`;
+            flashError(message);
+            return;
+          }
           const url = URL.createObjectURL(await response.blob());
           const anchor = document.createElement('a');
           anchor.href = url;
@@ -79,7 +102,7 @@ export function DownloadButton({ content, fileName, filePath, problemId }: { con
       }}
     >
       <Download className="h-3 w-3" />
-      下载结论
+      {error ?? '下载结论'}
     </button>
   );
 }

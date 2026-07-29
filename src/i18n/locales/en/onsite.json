@@ -88,5 +88,20 @@
     "loading": "加载中...",
     "empty": "暂无数据",
     "retry": "重试"
+  },
+  "files": {
+    "button": "📁 文件",
+    "drawerTitle": "现场文件浏览",
+    "loading": "加载中...",
+    "empty": "该目录为空",
+    "loadError": "加载失败,请重试",
+    "download": "下载",
+    "downloadFailed": "下载失败",
+    "downloadOutsideRoot": "路径越出存储根,无法下载",
+    "fileNotFound": "文件不存在",
+    "dirLabel": "目录",
+    "fileLabel": "文件",
+    "currentDir": "当前目录",
+    "rootLabel": "存储根目录"
   }
 }

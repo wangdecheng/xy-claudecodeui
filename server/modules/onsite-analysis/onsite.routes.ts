@@ -17,7 +17,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { realpath, rm, stat } from 'node:fs/promises';
+import { readdir, realpath, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 
@@ -746,6 +746,103 @@ router.get('/problems/:id/messages', async (req, res) => {
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : 'list messages failed';
     res.status(500).json({ error: 'LIST_MESSAGES_FAILED', message });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// GET /api/onsite/files/tree  +  GET /api/onsite/files/download
+// ---------------------------------------------------------------------------
+//
+// 独立于 problem 的 ONSITE_ROOT 文件浏览器(ADR 0002)。鉴权继承 mount 点
+// authenticateToken,只到"已登录 + 路径不越界"——不做 problem-owner 隔离
+// (个人工具定位,目录本就是用户自己的客户数据)。
+//
+//  - tree:懒加载,只列 dir 这一层直接子项;隐藏点号开头项(.claude/ 等)。
+//  - download:相对路径 + ?token= 回退鉴权(<a href> 直跳带不了 Authorization
+//    header),res.download 流式直发,浏览器原生下载。
+//
+// 路径一律相对 ONSITE_ROOT,realpath 解析符号链接后用 path.relative 防越界,
+// 与 /problems/:id/download 同构。存储不变量(所有产物落 ONSITE_ROOT 子树)
+// 的机器守护即 download 的越界 403 测试。
+
+/**
+ * 把相对 dir/path 解析为 ONSITE_ROOT 下的真实绝对路径,并断言不越界。
+ * 返回 null 表示越界或不存在(由调用方决定 403/404/空)。
+ */
+async function resolveWithinOnsiteRoot(rel: string): Promise<{ abs: string; real: string } | null> {
+  const root = resolveOnsiteRoot();
+  // 拒绝绝对路径 / 含 .. 的相对路径,避免 path.resolve 把它们带到根外。
+  if (path.isAbsolute(rel) || rel.split(path.sep).some((seg) => seg === '..')) return null;
+  const abs = path.resolve(root, rel);
+  const realRoot = await realpath(path.resolve(root));
+  let real: string;
+  try {
+    real = await realpath(abs);
+  } catch {
+    return null; // 不存在 / 不可解析
+  }
+  const relative = path.relative(realRoot, real);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) return null;
+  return { abs, real };
+}
+
+type TreeNode = {
+  name: string;
+  type: 'file' | 'dir';
+  relativePath: string;
+  size?: number;
+  mtime?: number;
+};
+
+// GET /api/onsite/files/tree?dir=<相对路径>
+// 列该层直接子项(不递归)。dir 省略 = 列 ONSITE_ROOT 根层。
+router.get('/files/tree', async (req, res) => {
+  const dir = typeof req.query.dir === 'string' ? req.query.dir : '';
+  try {
+    const resolved = await resolveWithinOnsiteRoot(dir);
+    // 越界 → 视为空(不暴露根外是否存在)。
+    if (!resolved) return res.json({ entries: [] });
+    const entries = await readdir(resolved.real, { withFileTypes: true });
+    const nodes: TreeNode[] = [];
+    for (const entry of entries) {
+      // 隐藏点号开头项(.claude/ .git/ 等)。
+      if (entry.name.startsWith('.')) continue;
+      const relativePath = dir ? `${dir}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        nodes.push({ name: entry.name, type: 'dir', relativePath });
+      } else if (entry.isFile()) {
+        const info = await stat(path.join(resolved.real, entry.name));
+        nodes.push({ name: entry.name, type: 'file', relativePath, size: info.size, mtime: info.mtimeMs });
+      }
+      // 符号链接等其他类型跳过(下载时 realpath 会再挡一次)。
+    }
+    // 目录在前,各自按名字升序。
+    nodes.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name, 'zh-Hans-CN-u-co-pinyin');
+    });
+    res.json({ entries: nodes });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return res.json({ entries: [] });
+    const message = error instanceof Error ? error.message : 'list files failed';
+    res.status(500).json({ error: 'LIST_FILES_FAILED', message });
+  }
+});
+
+// GET /api/onsite/files/download?path=<相对路径>&token=<token>
+// res.download 流式直发,自动设 Content-Disposition: attachment。
+router.get('/files/download', async (req, res) => {
+  const requestedPath = typeof req.query.path === 'string' ? req.query.path : '';
+  if (!requestedPath) return res.status(400).json({ error: 'FILE_NOT_FOUND', message: 'path is required' });
+  try {
+    const resolved = await resolveWithinOnsiteRoot(requestedPath);
+    if (!resolved) return res.status(403).json({ error: 'FILE_OUTSIDE_ROOT', message: '路径越出存储根' });
+    const info = await stat(resolved.real);
+    if (!info.isFile()) return res.status(404).json({ error: 'FILE_NOT_FOUND', message: 'not a file' });
+    return res.download(resolved.real, path.basename(resolved.real));
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return res.status(404).json({ error: 'FILE_NOT_FOUND' });
+    return res.status(500).json({ error: 'DOWNLOAD_FAILED' });
   }
 });
 
