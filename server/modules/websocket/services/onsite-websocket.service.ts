@@ -190,12 +190,30 @@ function attachHelloContext(ws: WebSocket, ctx: HelloContext): void {
           (kind === 'text' || kind === 'tool_use' || kind === 'tool_result') &&
           (role === 'user' || role === 'assistant')
         ) {
+          // The shared onsite socket can be rebound to another problem while
+          // an earlier provider run is still producing output. The registry
+          // rewrites outbound sessionId to the stable app session id, so use
+          // that identity for persistence instead of the socket's mutable
+          // current hello context.
+          const frameSessionId = typeof parsed.sessionId === 'string'
+            ? parsed.sessionId
+            : '';
+          const frameProblem = frameSessionId
+            ? onsiteProblemsDb.findById(frameSessionId)
+              ?? (() => {
+                const session = sessionsDb.getSessionById(frameSessionId);
+                return session ? onsiteProblemsDb.findByCwd(session.project_path) : null;
+              })()
+            : null;
+          if (!frameProblem) {
+            return originalSend(data as never, ...(args as []));
+          }
           const content = typeof parsed.content === 'string'
             ? parsed.content
             : (typeof parsed.text === 'string' ? parsed.text : '');
           const ts = typeof parsed.ts === 'number' ? parsed.ts : Date.now();
           const stored: StoredMessage = {
-            problemId: currentCtx.problemId,
+            problemId: frameProblem.id,
             role,
             kind: kind as StoredMessage['kind'],
             content,

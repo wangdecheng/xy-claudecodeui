@@ -15,7 +15,7 @@ import test from 'node:test';
 import type { WebSocket, WebSocketServer } from 'ws';
 
 import { closeConnection, initializeDatabase, sessionsDb, userDb } from '@/modules/database/index.js';
-import { problemService } from '@/modules/onsite-analysis/index.js';
+import { messagesStore, problemService } from '@/modules/onsite-analysis/index.js';
 import { onsiteWebSocketService } from '@/modules/websocket/services/onsite-websocket.service.js';
 
 type Listener = (...args: unknown[]) => void;
@@ -98,6 +98,7 @@ async function withIsolatedEnv(
 
   closeConnection();
   await initializeDatabase();
+  messagesStore._clearAllForTests();
   const aliceRow = userDb.createUser('ws-owner-alice', 'hash');
   const bobRow = userDb.createUser('ws-other-bob', 'hash');
   const users = {
@@ -109,6 +110,7 @@ async function withIsolatedEnv(
     await runTest(users);
   } finally {
     closeConnection();
+    messagesStore._clearAllForTests();
     if (previousDb === undefined) delete process.env.DATABASE_PATH;
     else process.env.DATABASE_PATH = previousDb;
     if (previousRoot === undefined) delete process.env.ONSITE_ROOT;
@@ -259,5 +261,61 @@ test('续聊 hello 返回首次运行后迁移的 provider UUID', async () => {
       )),
       '续聊必须在发送前恢复 provider UUID 映射',
     );
+  });
+});
+
+test('共享连接切换 problem 后，旧 problem 的迟到输出仍归档到旧 problem', async () => {
+  await withIsolatedEnv(async ({ alice }) => {
+    const firstProblem = await problemService.create({
+      customer: 'WsFirstCo',
+      third_bridge_branch: null,
+      iteration: 'release-test',
+      database: 'mysql',
+      cwd: `${process.env.ONSITE_ROOT}/WsFirstCo`,
+      description: 'First problem for routing isolation',
+      userId: alice.id,
+    });
+    const secondProblem = await problemService.create({
+      customer: 'WsSecondCo',
+      third_bridge_branch: null,
+      iteration: 'release-test',
+      database: 'mysql',
+      cwd: `${process.env.ONSITE_ROOT}/WsSecondCo`,
+      description: 'Second problem for routing isolation',
+      userId: alice.id,
+    });
+
+    const ws = new FakeWebSocket();
+    attachConnection(ws, alice);
+
+    for (const problem of [firstProblem, secondProblem]) {
+      ws.emit(
+        'message',
+        Buffer.from(JSON.stringify({
+          kind: 'onsite',
+          problemId: problem.id,
+          cwd: problem.cwd,
+        })),
+      );
+    }
+
+    // Model the canonical id after the first run has been assigned by Claude.
+    const firstProviderSessionId = `provider-${firstProblem.id}`;
+    sessionsDb.assignProviderSessionId(firstProblem.id, firstProviderSessionId);
+
+    // The first run is still allowed to finish after the shared socket has
+    // already been rebound to the second problem.
+    ws.send(JSON.stringify({
+      kind: 'text',
+      role: 'assistant',
+      sessionId: firstProviderSessionId,
+      content: '迟到的第一会话回复',
+    }));
+
+    assert.deepEqual(
+      messagesStore.getByProblemId(firstProblem.id).map((message) => message.content),
+      ['迟到的第一会话回复'],
+    );
+    assert.deepEqual(messagesStore.getByProblemId(secondProblem.id), []);
   });
 });
