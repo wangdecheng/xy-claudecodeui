@@ -88,6 +88,14 @@
     {
       "label": "中海油",
       "branch": "zhy_anke"
+    },
+    {
+      "label": "海关总署",
+      "branch": "wechat-standard-new-v2"
+    },
+    {
+      "label": "首发集团",
+      "branch": "sfjt_618276"
     }
   ],
   "iterations": [
