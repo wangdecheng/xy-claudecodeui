@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import { access, mkdir, mkdtemp, rm, utimes, writeFile } from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
@@ -199,19 +201,25 @@ test('cleanup deletes an old onsite directory before its database row', async ()
   assert.deepEqual(cleared, ['problem-1']);
 });
 
-test('cleanup keeps analyzing onsite problems and continues after a failure', async () => {
+test('cleanup removes inactive analyzing problems, keeps active problems, and continues after a failure', async () => {
   const deleted: string[] = [];
   const errors: unknown[] = [];
 
   const result = await cleanupExpiredContent({
     now: NOW,
     roots,
-    sessions: [],
+    sessions: [session({
+      session_id: 'active-session',
+      cwd: path.join(roots.onsiteRoot, 'active'),
+      kind: 'onsite',
+    })],
     problems: [
       problem({ id: 'analyzing', status: 'analyzing' }),
+      problem({ id: 'active', status: 'analyzing', cwd: path.join(roots.onsiteRoot, 'active') }),
       problem({ id: 'locked', cwd: path.join(roots.onsiteRoot, 'locked') }),
       problem({ id: 'successful', cwd: path.join(roots.onsiteRoot, 'successful') }),
     ],
+    isSessionActive: (sessionId) => sessionId === 'active-session',
     removePath: async (targetPath) => {
       if (targetPath.endsWith('/locked')) {
         throw new Error('directory is locked');
@@ -226,11 +234,92 @@ test('cleanup keeps analyzing onsite problems and continues after a failure', as
     },
   });
 
-  assert.equal(result.problemsDeleted, 1);
+  assert.equal(result.problemsDeleted, 2);
   assert.equal(result.failed, 1);
-  assert.equal(result.skipped, 1);
-  assert.deepEqual(deleted, ['successful']);
+  assert.equal(result.skipped, 2);
+  assert.deepEqual(deleted, ['analyzing', 'successful']);
   assert.equal(errors.length, 1);
+});
+
+test('cleanup deletes stale business directories from disk and preserves protected root content', async () => {
+  const onsiteRoot = await mkdtemp(path.join(os.tmpdir(), 'content-retention-onsite-'));
+  const oldDate = new Date(OLD_TIMESTAMP);
+  const recentDate = new Date(NOW.getTime() - 60_000);
+  const oldTracked = path.join(onsiteRoot, '20260701090000-old-tracked');
+  const oldOrphan = path.join(onsiteRoot, '20260702-old-orphan');
+  const activeProblem = path.join(onsiteRoot, '20260703090000-active');
+  const recentProblem = path.join(onsiteRoot, '20260727090000-recent');
+  const nonBusinessDirectory = path.join(onsiteRoot, 'untitled');
+  const hiddenDirectory = path.join(onsiteRoot, '.git');
+  const rootFile = path.join(onsiteRoot, 'CLAUDE.md');
+
+  const createDirectory = async (directory: string, modifiedAt: Date): Promise<void> => {
+    await mkdir(directory, { recursive: true });
+    const file = path.join(directory, 'artifact.log');
+    await writeFile(file, 'fixture', 'utf8');
+    await utimes(file, modifiedAt, modifiedAt);
+    await utimes(directory, modifiedAt, modifiedAt);
+  };
+
+  try {
+    await createDirectory(oldTracked, oldDate);
+    await createDirectory(oldOrphan, oldDate);
+    await createDirectory(activeProblem, oldDate);
+    await createDirectory(recentProblem, recentDate);
+    await createDirectory(nonBusinessDirectory, oldDate);
+    await createDirectory(hiddenDirectory, oldDate);
+    await writeFile(rootFile, 'protected', 'utf8');
+    await utimes(rootFile, oldDate, oldDate);
+
+    const deleted: string[] = [];
+    const result = await cleanupExpiredContent({
+      now: NOW,
+      roots: { ...roots, onsiteRoot },
+      sessions: [session({
+        session_id: 'active-onsite-session',
+        cwd: activeProblem,
+        kind: 'onsite',
+      })],
+      problems: [
+        problem({
+          id: path.basename(oldTracked),
+          status: 'analyzing',
+          cwd: oldTracked,
+          updated_at: 'CURRENT_TIMESTAMP',
+        }),
+        problem({
+          id: path.basename(activeProblem),
+          status: 'analyzing',
+          cwd: activeProblem,
+          updated_at: 'CURRENT_TIMESTAMP',
+        }),
+        problem({
+          id: path.basename(recentProblem),
+          cwd: recentProblem,
+          updated_at: 'CURRENT_TIMESTAMP',
+        }),
+      ],
+      isSessionActive: (sessionId) => sessionId === 'active-onsite-session',
+      deleteSession: () => true,
+      deleteProblem: (problemId) => deleted.push(problemId),
+      clearProblemMessages: () => undefined,
+      logger: silentLogger(),
+    });
+
+    await assert.rejects(access(oldTracked));
+    await assert.rejects(access(oldOrphan));
+    await access(activeProblem);
+    await access(recentProblem);
+    await access(nonBusinessDirectory);
+    await access(hiddenDirectory);
+    await access(rootFile);
+
+    assert.equal(result.problemsScanned, 4);
+    assert.equal(result.problemsDeleted, 2);
+    assert.deepEqual(deleted, [path.basename(oldTracked)]);
+  } finally {
+    await rm(onsiteRoot, { recursive: true, force: true });
+  }
 });
 
 test('getNextRetentionRunAt returns the next local 12:00', () => {

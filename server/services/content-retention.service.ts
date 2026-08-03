@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { rm as removePath } from 'node:fs/promises';
+import { lstat, readdir, rm as removePath } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 
@@ -23,6 +23,11 @@ type ProviderName = 'claude' | 'cursor' | 'codex' | 'gemini' | 'opencode' | stri
 type RetentionPath = {
   path: string;
   root: string;
+};
+
+type OnsiteCleanupCandidate = {
+  path: string;
+  problem: OnsiteProblemRecord | null;
 };
 
 export type ContentRetentionResult = {
@@ -62,6 +67,7 @@ export type ContentRetentionDependencies = {
 
 const SQLITE_UTC_TIMESTAMP_REGEX = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/;
 const CLEANABLE_PROVIDERS = new Set(['claude', 'cursor', 'codex', 'gemini']);
+const ONSITE_BUSINESS_DIRECTORY_REGEX = /^\d{8}(?:\d{6})?-/;
 
 function getDefaultRoots(): ContentRetentionRoots {
   const home = os.homedir();
@@ -98,6 +104,20 @@ function isPathWithinRoot(candidatePath: string, rootPath: string): boolean {
 function assertPathWithinRoot(candidatePath: string, rootPath: string, label: string): void {
   if (!isPathWithinRoot(candidatePath, rootPath)) {
     throw new Error(`${label} is outside its managed root: ${candidatePath}`);
+  }
+}
+
+function assertDirectChildWithinRoot(candidatePath: string, rootPath: string, label: string): void {
+  const candidate = path.resolve(candidatePath);
+  const root = path.resolve(rootPath);
+  const relative = path.relative(root, candidate);
+  if (
+    relative === ''
+    || relative.startsWith('..')
+    || path.isAbsolute(relative)
+    || relative.includes(path.sep)
+  ) {
+    throw new Error(`${label} is not a direct child of its managed root: ${candidatePath}`);
   }
 }
 
@@ -166,19 +186,97 @@ function getSessionArtifactPaths(
   return paths;
 }
 
-function shouldSkipOnsiteProblem(
-  problem: OnsiteProblemRecord,
+function getSessionsForOnsitePath(
+  onsitePath: string,
   sessions: SessionRetentionRecord[],
-  isSessionActive: (sessionId: string) => boolean,
-): boolean {
-  if (problem.status === 'analyzing') {
-    return true;
+): SessionRetentionRecord[] {
+  const normalizedPath = path.resolve(onsitePath);
+  return sessions.filter(
+    (session) => session.cwd !== null && path.resolve(session.cwd) === normalizedPath,
+  );
+}
+
+function isErrnoException(error: unknown, code: string): boolean {
+  return error instanceof Error && 'code' in error && error.code === code;
+}
+
+async function getNewestFilesystemMtime(targetPath: string): Promise<number | null> {
+  let targetStat;
+  try {
+    targetStat = await lstat(targetPath);
+  } catch (error) {
+    if (isErrnoException(error, 'ENOENT')) return null;
+    throw error;
   }
 
-  return sessions.some(
-    (session) =>
-      session.cwd === problem.cwd && isSessionActive(session.session_id),
-  );
+  let newestMtime = targetStat.mtimeMs;
+  if (!targetStat.isDirectory() || targetStat.isSymbolicLink()) {
+    return newestMtime;
+  }
+
+  let entries;
+  try {
+    entries = await readdir(targetPath, { withFileTypes: true });
+  } catch (error) {
+    if (isErrnoException(error, 'ENOENT')) return null;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    const childMtime = await getNewestFilesystemMtime(path.join(targetPath, entry.name));
+    if (childMtime !== null) {
+      newestMtime = Math.max(newestMtime, childMtime);
+    }
+  }
+  return newestMtime;
+}
+
+async function getOnsiteCleanupCandidates(
+  onsiteRoot: string,
+  problems: OnsiteProblemRecord[],
+): Promise<OnsiteCleanupCandidate[]> {
+  const candidates: OnsiteCleanupCandidate[] = problems.map((problem) => ({
+    path: path.resolve(problem.cwd),
+    problem,
+  }));
+  const trackedPaths = new Set(candidates.map((candidate) => candidate.path));
+
+  let entries;
+  try {
+    entries = await readdir(onsiteRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isErrnoException(error, 'ENOENT')) return candidates;
+    throw error;
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !ONSITE_BUSINESS_DIRECTORY_REGEX.test(entry.name)) {
+      continue;
+    }
+    const candidatePath = path.resolve(onsiteRoot, entry.name);
+    if (!trackedPaths.has(candidatePath)) {
+      candidates.push({ path: candidatePath, problem: null });
+    }
+  }
+  return candidates;
+}
+
+async function getOnsiteLastActivity(
+  candidate: OnsiteCleanupCandidate,
+  sessions: SessionRetentionRecord[],
+): Promise<number | null> {
+  const timestamps: number[] = [];
+  const problemTimestamp = parseTimestamp(candidate.problem?.updated_at);
+  if (problemTimestamp !== null) timestamps.push(problemTimestamp);
+
+  for (const session of sessions) {
+    const sessionTimestamp = parseTimestamp(session.updated_at);
+    if (sessionTimestamp !== null) timestamps.push(sessionTimestamp);
+  }
+
+  const filesystemTimestamp = await getNewestFilesystemMtime(candidate.path);
+  if (filesystemTimestamp !== null) timestamps.push(filesystemTimestamp);
+  return timestamps.length > 0 ? Math.max(...timestamps) : null;
 }
 
 async function removeManagedPath(
@@ -233,12 +331,6 @@ export async function cleanupExpiredContent(
     failed: 0,
   };
 
-  const analyzingProblemCwds = new Set(
-    problems
-      .filter((problem) => problem.status === 'analyzing')
-      .map((problem) => problem.cwd),
-  );
-
   for (const session of sessions) {
     const updatedAt = parseTimestamp(session.updated_at);
     if (updatedAt === null || updatedAt >= cutoffTimestamp) {
@@ -246,10 +338,7 @@ export async function cleanupExpiredContent(
       continue;
     }
 
-    if (
-      isSessionActive(session.session_id)
-      || (session.cwd !== null && analyzingProblemCwds.has(session.cwd))
-    ) {
+    if (isSessionActive(session.session_id)) {
       result.skipped += 1;
       continue;
     }
@@ -274,29 +363,49 @@ export async function cleanupExpiredContent(
     }
   }
 
-  for (const problem of problems) {
-    const updatedAt = parseTimestamp(problem.updated_at);
-    if (updatedAt === null || updatedAt >= cutoffTimestamp) {
-      result.skipped += 1;
-      continue;
-    }
+  let onsiteCandidates: OnsiteCleanupCandidate[];
+  try {
+    onsiteCandidates = await getOnsiteCleanupCandidates(roots.onsiteRoot, problems);
+    result.problemsScanned = onsiteCandidates.length;
+  } catch (error) {
+    result.failed += 1;
+    logger.error('[content-retention] failed to scan onsite root', {
+      onsiteRoot: roots.onsiteRoot,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    onsiteCandidates = problems.map((problem) => ({
+      path: path.resolve(problem.cwd),
+      problem,
+    }));
+  }
 
-    if (shouldSkipOnsiteProblem(problem, sessions, isSessionActive)) {
-      result.skipped += 1;
-      continue;
-    }
+  for (const candidate of onsiteCandidates) {
+    const problemId = candidate.problem?.id ?? path.basename(candidate.path);
 
     try {
-      const onsitePath = path.resolve(problem.cwd);
-      assertPathWithinRoot(onsitePath, roots.onsiteRoot, 'Onsite problem directory');
-      await remove(onsitePath, { recursive: true, force: true });
-      deleteProblem(problem.id);
-      clearProblemMessages(problem.id);
+      assertDirectChildWithinRoot(candidate.path, roots.onsiteRoot, 'Onsite problem directory');
+      const matchingSessions = getSessionsForOnsitePath(candidate.path, sessions);
+      if (matchingSessions.some((session) => isSessionActive(session.session_id))) {
+        result.skipped += 1;
+        continue;
+      }
+
+      const lastActivity = await getOnsiteLastActivity(candidate, matchingSessions);
+      if (lastActivity === null || lastActivity >= cutoffTimestamp) {
+        result.skipped += 1;
+        continue;
+      }
+
+      await remove(candidate.path, { recursive: true, force: true });
+      if (candidate.problem) {
+        deleteProblem(candidate.problem.id);
+      }
+      clearProblemMessages(problemId);
       result.problemsDeleted += 1;
     } catch (error) {
       result.failed += 1;
       logger.error('[content-retention] onsite problem cleanup failed', {
-        problemId: problem.id,
+        problemId,
         error: error instanceof Error ? error.message : String(error),
       });
     }
