@@ -25,7 +25,7 @@ Tests use Node’s built-in `node:test` with `node:assert/strict`; React renderi
 
 Commits follow Conventional Commits via commitlint: `feat: ...`, `fix(scope): ...`, `docs: ...`, `refactor: ...`, and similar types. Keep messages imperative and scoped when helpful, for example `fix(onsite): preserve problem history on reload`. Pull requests should explain what changed and why, link issues, include screenshots for UI changes, and confirm `npm run build`, `npm run typecheck`, and `npm run lint` pass.
 
-This repository is a personal project. Company-specific ONES IDs, branch naming rules, commit-length requirements, and mandatory merge-request workflows do not apply. When the user asks to commit or push, direct commits and pushes to `main` are allowed unless the user explicitly requests a feature branch or pull request.
+This repository is a personal project. When the user asks to commit or push, commit and push directly to `main` unless they explicitly request a feature branch or pull request. No ONES ID is required, and no merge request is needed by default. Company-specific ONES IDs, branch naming rules, commit-length requirements, and mandatory merge-request workflows do not apply; use the repository's Conventional Commits style for messages.
 
 ## Security & Configuration Tips
 
