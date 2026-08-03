@@ -16,12 +16,14 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+
 import Database from 'better-sqlite3';
 
 import { closeConnection, getConnection } from '@/modules/database/connection.js';
+
 import { initSchemaWithMigrations } from './helpers/test-schema.js';
 
-type ColumnInfo = { name: string; notnull: number; type: string };
+type ColumnInfo = { name: string; notnull: number; type: string; dflt_value: string | null };
 
 async function withIsolatedDatabase(runTest: () => void | Promise<void>): Promise<void> {
   const previousDatabasePath = process.env.DATABASE_PATH;
@@ -117,6 +119,10 @@ test('旧 DB 跑迁移后 database 从 NOT NULL 变 nullable, 数据不丢', asy
     const dbCol = cols.find((c) => c.name === 'database');
     assert.ok(dbCol);
     assert.equal(dbCol.notnull, 0, '迁移后 database 列应允许 NULL');
+    const createdAtCol = cols.find((c) => c.name === 'created_at');
+    const updatedAtCol = cols.find((c) => c.name === 'updated_at');
+    assert.equal(createdAtCol?.dflt_value, 'CURRENT_TIMESTAMP');
+    assert.equal(updatedAtCol?.dflt_value, 'CURRENT_TIMESTAMP');
 
     // 4) 旧数据保留
     const row = db
@@ -133,9 +139,13 @@ test('旧 DB 跑迁移后 database 从 NOT NULL 变 nullable, 数据不丢', asy
        VALUES (?, ?, ?, NULL, ?)`,
     ).run('legacy-2', '其他问题', 'master_5.2_3.2', '/tmp/legacy-2');
     const row2 = db
-      .prepare('SELECT database FROM onsite_problems WHERE id = ?')
-      .get('legacy-2') as { database: string | null };
+      .prepare('SELECT database, created_at, updated_at FROM onsite_problems WHERE id = ?')
+      .get('legacy-2') as { database: string | null; created_at: string; updated_at: string };
     assert.equal(row2.database, null);
+    assert.notEqual(row2.created_at, 'CURRENT_TIMESTAMP');
+    assert.notEqual(row2.updated_at, 'CURRENT_TIMESTAMP');
+    assert.ok(Number.isFinite(Date.parse(`${row2.created_at.replace(' ', 'T')}Z`)));
+    assert.ok(Number.isFinite(Date.parse(`${row2.updated_at.replace(' ', 'T')}Z`)));
 
     // 6) 索引重建 (DROP TABLE 把索引一起带走了)
     const indexes = db

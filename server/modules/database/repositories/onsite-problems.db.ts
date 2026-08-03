@@ -48,10 +48,10 @@ type ProblemInsertInput = Omit<
 const INSERT_SQL = `
 INSERT INTO onsite_problems (
   id, customer, third_bridge_branch, iteration, database, status, cwd, problem_json_path,
-  description, owner_user_id
+  description, owner_user_id, created_at, updated_at
 ) VALUES (
   @id, @customer, @third_bridge_branch, @iteration, @database, @status, @cwd, @problem_json_path,
-  @description, @owner_user_id
+  @description, @owner_user_id, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
 )
 `;
 

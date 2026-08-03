@@ -693,7 +693,10 @@ const dropOnsiteProblemsDatabaseNotNull = (db: Database): void => {
     .map((c) => {
       // 本次迁移只对 database 这一列去掉 NOT NULL, 其他列严格按原表复刻
       const notNull = c.name === 'database' ? '' : c.notnull ? ' NOT NULL' : '';
-      const defaultClause = c.dflt_value === null ? '' : ` DEFAULT ${JSON.stringify(c.dflt_value)}`;
+      // PRAGMA returns the default as an SQL expression (for example
+      // CURRENT_TIMESTAMP or 'analyzing'). Re-quoting it as JSON turns the
+      // expression into a literal string and corrupts every subsequent row.
+      const defaultClause = c.dflt_value === null ? '' : ` DEFAULT ${String(c.dflt_value)}`;
       const pk = c.pk ? ' PRIMARY KEY' : '';
       return `${c.name} ${c.type || 'TEXT'}${notNull}${defaultClause}${pk}`;
     })
