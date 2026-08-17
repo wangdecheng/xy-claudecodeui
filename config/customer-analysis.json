@@ -96,6 +96,10 @@
     {
       "label": "首发集团",
       "branch": "sfjt_618276"
+    },
+    {
+      "label": "贵政通",
+      "branch": "wechat-gzt"
     }
   ],
   "iterations": [
