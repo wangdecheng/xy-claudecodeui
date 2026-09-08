@@ -3,7 +3,7 @@ title: xy-claudecodeui 文档入口
 category: overview
 summary: xy-claudecodeui 服务文档的导航入口
 owner: xy-claudecodeui
-last_reviewed: 2026-07-27
+last_reviewed: 2026-09-08
 ---
 
 <!-- SECTION: navigation (人工维护) -->
@@ -11,6 +11,7 @@ last_reviewed: 2026-07-27
 
 - 内容自动清理：见 [内容自动清理流程](./flows/content-retention.md) 和 [自动内容保留策略](./adr/0001-content-retention-policy.md)
 - 现场问题客户选择：见 [现场问题客户选择采用受控搜索](./adr/0003-searchable-onsite-customer-selector.md)
+- 公有云分析与公私云提示词分流：见 [公有云问题分析流程设计](./flows/public-cloud-analysis.md)（提示词已落地，实际模型加载待验证）
 
 <!-- SECTION: key-documents (工具自动维护，请勿手动编辑) -->
 ## 关键文档

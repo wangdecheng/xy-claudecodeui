@@ -40,8 +40,8 @@
       "minItems": 1,
       "items": {
         "type": "string",
-        "pattern": "^(master|release)_.+",
-        "description": "迭代分支名，形如 release_5.2_3.2_20260327 或 master_5.2_3.2"
+        "pattern": "^(pub$|(master|release)_.+)",
+        "description": "迭代分支名，形如 release_5.2_3.2_20260327 或 master_5.2_3.2；release_pub 表示公有云最新分支，兼容历史值 pub"
       }
     }
   },
